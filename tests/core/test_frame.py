@@ -116,3 +116,48 @@ def test_cpdtab2spctrow():
     assert float(pct.iloc[-1, -1]) == 100.0
     assert float(pct.loc[('东', '东 Subtotal'), 'Total']) == 100.0
     assert isinstance(pct, FramePro)
+
+
+def test_duplicates_report():
+    # upi: 1 出现 1 次，2 出现 2 次，3/4 各出现 3 次，另有 2 行缺失
+    df = FramePro({'upi': [1, 2, 2, 3, 3, 3, 4, 4, 4, None, None]})
+    result = df.duplicates_report('upi')
+    assert isinstance(result, FramePro)
+    assert list(result.columns) == ['copies', 'observations', 'surplus']
+    assert result.values.tolist() == [[1, 1, 0], [2, 4, 2], [3, 6, 4]]
+    assert result['observations'].sum() == len(df)
+
+    result_dropna = df.duplicates_report('upi', dropna=True)
+    assert result_dropna.values.tolist() == [[1, 1, 0], [2, 2, 1], [3, 6, 4]]
+
+
+def test_duplicates_report_multi_columns():
+    df = FramePro({'upi': [1, 1, 2, 2], 'year': [2024, 2025, 2024, 2024]})
+    assert df.duplicates_report('upi').values.tolist() == [[2, 4, 2]]
+    assert df.duplicates_report(['upi', 'year']).values.tolist() == [[1, 2, 0], [2, 2, 1]]
+
+
+def test_duplicates_report_empty():
+    result = FramePro({'upi': []}).duplicates_report('upi')
+    assert len(result) == 0
+    assert list(result.columns) == ['copies', 'observations', 'surplus']
+
+
+def test_duplicates_report_detail():
+    df = FramePro({'upi': [101, 102, 102, 103, 103, 103, None, None]})
+    result = df.duplicates_report('upi', d='detail')
+    assert isinstance(result, FramePro)
+    assert list(result.columns) == ['upi', 'copies']
+    assert result['upi'].tolist()[:2] == [103, 102]
+    assert result['copies'].tolist() == [3, 2, 2]
+    assert result['upi'].isna().iloc[2]
+
+    result_dropna = df.duplicates_report('upi', d='detail', dropna=True)
+    assert result_dropna.values.tolist() == [[103, 3], [102, 2]]
+
+    df_multi = FramePro({'upi': [1, 1, 1, 2], 'year': [2024, 2024, 2025, 2024]})
+    assert df_multi.duplicates_report(['upi', 'year'], d='detail').values.tolist() == [[1, 2024, 2]]
+
+    empty = FramePro({'upi': [1, 2, 3]}).duplicates_report('upi', d='detail')
+    assert len(empty) == 0
+    assert list(empty.columns) == ['upi', 'copies']

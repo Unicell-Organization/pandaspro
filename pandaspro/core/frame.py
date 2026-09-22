@@ -6,6 +6,7 @@ from pandaspro.core.tools.consecgrouper import ConsecGrouper
 from pandaspro.core.tools.csort import csort
 from pandaspro.core.tools.corder import corder
 from pandaspro.core.tools.dfilter import dfilter
+from pandaspro.core.tools.duplicates_report import duplicates_report
 from pandaspro.core.tools.inrange import inrange
 from pandaspro.core.tools.lowervarlist import lowervarlist
 from pandaspro.core.tools.search2df import search2df
@@ -1026,6 +1027,17 @@ class FramePro(pd.DataFrame):
         data = self.copy()
         result = self._constructor(data[data.duplicated(subset=column_list, keep='first')])
         return result
+
+    def duplicates_report(self, column_list, d: str = 'brief', dropna: bool = False):
+        """
+        仿 Stata `duplicates report`：按字段统计重复情况。
+
+        例: df.duplicates_report('upi')                返回 copies / observations / surplus 分布
+            df.duplicates_report('upi', d='detail')    逐个列出重复的 upi 及其份数
+            df.duplicates_report(['upi', 'year'])
+        dropna=True 时依据字段缺失的行不参与统计；要看具体重复行用 df.show_duplicates(...)。
+        """
+        return self._constructor(duplicates_report(self, column_list, d=d, dropna=dropna))
 
     # tab.__doc__ = pandaspro.core.tools.tab.tab.__doc__
     # dfilter.__doc__ = pandaspro.core.tools.dfilter.dfilter.__doc__

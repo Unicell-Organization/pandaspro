@@ -5,7 +5,7 @@ HELP_TOPIC_KEYWORDS = {
         'sum', 'mean', '小计', 'subtotal', '___', '多维',
     ),
     'magic': ('cpdlist', 'cpddict', 'cpdf', 'cpdfnot', 'cpdisna', 'cpdnotna', '魔法', 'cpd_'),
-    'scan': ('singleton', 'scan', '自检', 'tab_singleton', '计数为'),
+    'scan': ('singleton', 'scan', '自检', 'tab_singleton', '计数为', 'duplicate', 'dup', '重复', '去重'),
     'filter': ('filter', '筛选', 'inlist', 'inrange', 'dfilter', 'indate', 'cpdf'),
     'data': ('列', '排序', 'csort', 'corder', 'merge', 'export', 'varnames', 'lowervarlist', 'add_total'),
 }
@@ -17,7 +17,7 @@ FramePro / cpdBaseFrame 快速帮助
 用法: df.cpdhelp()           # 总览
       df.cpdhelp('tab')      # 频数 / 交叉表
       df.cpdhelp('magic')    # cpd* 魔法属性总览
-      df.cpdhelp('scan')     # 批量自检
+      df.cpdhelp('scan')     # 批量自检 / 重复检查
       df.cpdhelp('filter')   # 筛选魔法属性
       df.cpdhelp('data')     # 列操作 / 排序 / 筛选方法
 
@@ -96,6 +96,15 @@ cpdtab2_ / cpdtab2s_ / cpdtab2pct_ / cpdtab2sum_  多维交叉表（见 cpdhelp(
 
 规则: 唯一取值类别 > 30 的列跳过；≤ 30 时用 tab 统计。
 返回 field / value / count，并打印报告。
+
+重复检查（仿 Stata duplicates report）
+  df.duplicates_report('upi')             按 upi 统计重复分布
+  df.duplicates_report('upi', d='detail')   列出哪些 upi 重复、各重复几份
+  df.duplicates_report(['upi', 'year'])   按多字段组合判断重复
+  df.duplicates_report('upi', dropna=True)  缺失的 upi 不参与统计
+  df.show_duplicates(['upi'])             取出多余的重复行（每组保留第一行之外的）
+
+默认返回 copies / observations / surplus；d='detail' 返回 upi / copies。都会打印一行汇总。
 """,
     'filter': """
 筛选
