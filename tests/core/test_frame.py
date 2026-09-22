@@ -161,3 +161,21 @@ def test_duplicates_report_detail():
     empty = FramePro({'upi': [1, 2, 3]}).duplicates_report('upi', d='detail')
     assert len(empty) == 0
     assert list(empty.columns) == ['upi', 'copies']
+
+
+def test_duplicates_report_hints(capsys):
+    df = FramePro({'upi': [101, 102, 102, 103, 103, 103, None, None]})
+    df.duplicates_report('upi')
+    out = capsys.readouterr().out
+    assert "df.duplicates_report('upi', d='detail')" in out
+    assert "df.show_duplicates('upi')" in out
+    assert "df.duplicates_report('upi', dropna=True)" in out
+
+    FramePro({'upi': [101, 102, 102, 103, 103, 103]}).duplicates_report('upi', d='detail')
+    out = capsys.readouterr().out
+    assert "df.inlist('upi', 103, 102)" in out
+    assert "df.duplicates_report('upi')" in out
+    assert 'dropna=True' not in out
+
+    FramePro({'upi': [1, 2, 3]}).duplicates_report('upi')
+    assert '提示' not in capsys.readouterr().out

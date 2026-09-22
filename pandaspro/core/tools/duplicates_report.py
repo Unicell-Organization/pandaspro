@@ -69,8 +69,39 @@ def duplicates_report(data, column_list, d: str = 'brief', dropna: bool = False)
         )
     print(summary)
 
+    dup_sizes = group_sizes[group_sizes > 1].sort_values(ascending=False, kind='stable')
+    if n_dup_values:
+        _print_hints(column_list, d, dup_sizes, show_dropna=bool(n_missing) and not dropna)
+
     if d == 'detail':
-        dup_sizes = group_sizes[group_sizes > 1].sort_values(ascending=False, kind='stable')
         return dup_sizes.rename('copies').reset_index().astype({'copies': 'int64'})
 
     return result
+
+
+def _print_hints(column_list, d, dup_sizes, show_dropna):
+    """打印接下来可用的相关调用，列名与取值直接代入，复制即可用。"""
+    col_arg = repr(column_list[0]) if len(column_list) == 1 else repr(column_list)
+    d_arg = ", d='detail'" if d == 'detail' else ''
+    hints = []
+
+    if d == 'brief':
+        hints.append((f"df.duplicates_report({col_arg}, d='detail')", '看哪些取值重复、各重复几份'))
+    else:
+        # inlist 只支持单字段；缺失值不放进示例
+        if len(column_list) == 1:
+            values = [v.item() if hasattr(v, 'item') else v for v in dup_sizes.index if not pd.isna(v)]
+            examples = values[:3]
+            if examples:
+                desc = '看这些取值的完整行' if len(values) <= 3 else f'看前 {len(examples)} 个重复取值的完整行'
+                hints.append((f"df.inlist({col_arg}, {', '.join(repr(v) for v in examples)})", desc))
+        hints.append((f'df.duplicates_report({col_arg})', '看重复份数分布'))
+
+    hints.append((f'df.show_duplicates({col_arg})', '取出多余的重复行（每组第一行之外）'))
+    if show_dropna:
+        hints.append((f'df.duplicates_report({col_arg}{d_arg}, dropna=True)', '缺失值不参与统计'))
+
+    width = max(len(code) for code, _ in hints)
+    print('提示：')
+    for code, desc in hints:
+        print(f'  {code.ljust(width)}  {desc}')
