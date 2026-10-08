@@ -71,7 +71,8 @@ def test_framepro_getattr_forms(manifest):
     for form in ["cpdmap_", "cpdlist_", "cpdf_", "cpdfnot_", "cpdisna_", "cpdnotna_",
                  "cpdtab_", "cpdtabt_", "cpdtabd_", "cpdtab2_", "cpdtab2s_",
                  "cpdtab2pct_", "cpdtab2pctrow_", "cpdtab2pctcol_",
-                 "cpdtab2spct_", "cpdtab2spctrow_", "cpdtab2spctcol_"]:
+                 "cpdtab2spct_", "cpdtab2spctrow_", "cpdtab2spctcol_",
+                 "cpdtab2", "cpdtab2s", "nototal", "tdiff", "tratio", "tsort", "tsortd"]:
         assert form + "…" in names
 
 

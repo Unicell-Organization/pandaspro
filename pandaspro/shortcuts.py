@@ -46,6 +46,26 @@ OVERRIDES: dict[str, dict] = {
         "summary": "cpdtab2s<agg>_ pivot with subtotals and an aggregation",
         "shape": r"^cpdtab2s(min|max|mean|median|sum|std|var|first|last)_",
     },
+    "FramePro.nototal…": {
+        "summary": "Drop the Total column of a cross-tab; nototalrow / nototalall drop the row / both",
+        "shape": r"^nototal(row|all)?$",
+    },
+    "FramePro.tdiff…": {
+        "summary": "Add a Diff column to a cross-tab: tdiff (last - first) or tdiff_A__C (A - C)",
+        "shape": r"^tdiff(_.+__.+)?$",
+    },
+    "FramePro.tratio…": {
+        "summary": "Add a Ratio column to a cross-tab: tratio (last / first) or tratio_A__C (A / C)",
+        "shape": r"^tratio(_.+__.+)?$",
+    },
+    "FramePro.tsort…": {
+        "summary": "Sort cross-tab rows ascending by a column, Total row stays last: tsort_Diff, tsort_1",
+        "shape": r"^tsort(_.+)?$",
+    },
+    "FramePro.tsortd…": {
+        "summary": "Sort cross-tab rows descending by a column, Total row stays last: tsortd_Diff",
+        "shape": r"^tsortd(_.+)?$",
+    },
 }
 
 # __getattr__ branches whose test is not a name shape. Key is

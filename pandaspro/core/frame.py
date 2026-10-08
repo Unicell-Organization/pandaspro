@@ -13,13 +13,13 @@ from pandaspro.core.tools.search2df import search2df
 from pandaspro.core.tools.strpos import strpos
 from pandaspro.core.tools.tab import tab
 from pandaspro.core.tools.tab2 import (
-    CPDTAB2_PCT_PREFIXES,
-    add_subtotals,
+    cpdtab2_agg_result,
+    cpdtab2_count_result,
     cpdtab2_pct_result,
+    detect_cpdtab2_count,
     detect_cpdtab2_pct,
-    get_aggfunc,
-    strip_cpdtab2_fields_part,
 )
+from pandaspro.core.tools.tabops import apply_tab_op, detect_tab_op
 from pandaspro.core.tools.tab_singleton_scan import tab_singleton_scan
 from pandaspro.core.tools.cpdhelp import cpdhelp
 from pandaspro.core.tools.askai import askai as _askai, print_askai_result
@@ -57,32 +57,8 @@ class FramePro(pd.DataFrame):
     def __getattr__(self, item):
         def _parse_and_match(columns_list, attribute_name):
             """
-            解析属性名并匹配列名
-            对于 cpdtab2 系列，支持用 ___ 分隔 index 和 columns 字段
-            例如：cpdtab2_Region__Product___Quarter__Category
+            解析属性名并匹配列名（cpdtab2 系列在 tools/tab2.py 里解析）
             """
-            # 对于包含 ___ 的 cpdtab2 系列，直接返回所有匹配的字段
-            # 具体的分隔逻辑由调用者处理
-            if attribute_name.startswith('cpdtab2') and '___' in attribute_name:
-                fields_part = strip_cpdtab2_fields_part(attribute_name)
-                if fields_part:
-                    # 提取所有字段名（用 __ 分隔，忽略 ___）
-                    all_fields_str = fields_part.replace('___', '__')
-                    all_fields = all_fields_str.split('__')
-                    
-                    # 匹配字段
-                    matched_columns = [col for col in columns_list if col in all_fields]
-                    
-                    # 验证所有字段都能找到
-                    if len(matched_columns) != len(all_fields):
-                        missing = set(all_fields) - set(matched_columns)
-                        raise ValueError(f"Some fields not found in dataframe columns. Missing: {missing}, Expected: {all_fields}, Found: {matched_columns}")
-                    
-                    # 按原始顺序排序
-                    matched_columns.sort(key=lambda col: all_fields.index(col))
-                    return matched_columns
-            
-            # 原有的解析逻辑（非 cpdtab2 系列或不含 ___）
             if attribute_name.startswith('cpdmap_'):
                 key_part = attribute_name[7:].split('__')
             elif attribute_name.startswith('cpdlist_'):
@@ -101,28 +77,6 @@ class FramePro(pd.DataFrame):
                 key_part = attribute_name[8:].split('__')
             elif attribute_name.startswith('cpdtabd_'):
                 key_part = attribute_name[8:].split('__')
-            elif attribute_name.startswith('cpdtab2spctrow_'):
-                key_part = attribute_name[13:].split('__')
-            elif attribute_name.startswith('cpdtab2spctcol_'):
-                key_part = attribute_name[13:].split('__')
-            elif attribute_name.startswith('cpdtab2spct_'):
-                key_part = attribute_name[10:].split('__')
-            elif attribute_name.startswith('cpdtab2pctrow_'):
-                key_part = attribute_name[12:].split('__')
-            elif attribute_name.startswith('cpdtab2pctcol_'):
-                key_part = attribute_name[12:].split('__')
-            elif attribute_name.startswith('cpdtab2pct_'):
-                key_part = attribute_name[9:].split('__')
-            elif attribute_name.startswith('cpdtab2s_'):
-                key_part = attribute_name[9:].split('__')
-            elif attribute_name.startswith('cpdtab2_'):
-                key_part = attribute_name[8:].split('__')
-            elif aggfunc and attribute_name.startswith('cpdtab2s' + aggfunc + '_'):
-                prefix_length = len('cpdtab2s' + aggfunc + '_')
-                key_part = attribute_name[prefix_length:].split('__')
-            elif aggfunc and attribute_name.startswith('cpdtab2' + aggfunc + '_'):
-                prefix_length = len('cpdtab2' + aggfunc + '_')
-                key_part = attribute_name[prefix_length:].split('__')
             else:
                 raise ValueError('prefix not added in [_parse_and_match] method')
 
@@ -146,44 +100,6 @@ class FramePro(pd.DataFrame):
                 raise ValueError("Attribute var name parsing results does not match exactly 1 columns in the frame columns")
             if attribute_name.startswith('cpdtabd_') and len(matched_columns) != 1:
                 raise ValueError("Attribute var name parsing results does not match exactly 1 columns in the frame columns")
-            # 检查 cpdtab2 百分比交叉表 - 不含 ___
-            for prefix, _, _ in CPDTAB2_PCT_PREFIXES:
-                if attribute_name.startswith(prefix) and '___' not in attribute_name and len(matched_columns) < 2:
-                    raise ValueError(
-                        f"Attribute var name parsing results needs at least 2 columns for pivot, "
-                        f"matched columns are {matched_columns}"
-                    )
-
-            # 检查 cpdtab2s_ (count with subtotals) - 不含 ___
-            if attribute_name.startswith('cpdtab2s_') and '___' not in attribute_name and len(matched_columns) < 2:
-                raise ValueError(f"Attribute var name parsing results needs at least 2 columns for pivot, matched columns are {matched_columns}")
-            
-            # 检查 cpdtab2s + aggfunc (e.g., cpdtab2ssum_) - 不含 ___
-            if (attribute_name.startswith('cpdtab2s')
-                    and not attribute_name.startswith('cpdtab2spct')
-                    and '___' not in attribute_name
-                    and len(attribute_name) > 8
-                    and attribute_name[8] != '_'
-                    and len(matched_columns) < 3):
-                raise ValueError(f"Attribute var name parsing results needs at least 3 columns (index, columns, value), matched columns are {matched_columns}")
-            
-            # 检查 cpdtab2_ (count) - 不含 ___
-            if (attribute_name.startswith('cpdtab2_')
-                    and '___' not in attribute_name
-                    and not attribute_name.startswith('cpdtab2s')
-                    and len(matched_columns) < 2):
-                raise ValueError(f"Attribute var name parsing results needs at least 2 columns for pivot, matched columns are {matched_columns}")
-            
-            # 检查 cpdtab2 + aggfunc (e.g., cpdtab2sum_) - 不含 ___
-            if (attribute_name.startswith('cpdtab2')
-                    and not attribute_name.startswith('cpdtab2p')
-                    and not attribute_name.startswith('cpdtab2s')
-                    and '___' not in attribute_name
-                    and len(attribute_name) > 7
-                    and attribute_name[7] != '_'
-                    and len(matched_columns) < 3):
-                raise ValueError(f"Attribute var name parsing results needs at least 3 columns (index, columns, value), matched columns are {matched_columns}")
-
             matched_columns.sort(key=lambda col: key_part.index(col))
 
             return matched_columns
@@ -235,279 +151,15 @@ class FramePro(pd.DataFrame):
                 self, item, mode, with_subtotals, prefix_len, self._constructor
             )
 
-        elif item.startswith('cpdtab2s_'):
-            # 检查是否包含 ___
-            if '___' in item:
-                # 使用 ___ 分隔 index 和 columns
-                # 需要手动解析以确定分界
-                fields_part = item[9:]
-                parts = fields_part.split('___')
-                if len(parts) != 2:
-                    raise ValueError(f"Invalid cpdtab2s format with ___: expected exactly one ___ separator, got {len(parts)-1}")
-                
-                index_fields = parts[0].split('__')
-                columns_fields = parts[1].split('__')
-                
-                # 匹配字段到实际列名
-                pivot_index = [col for col in self.columns if col in index_fields]
-                pivot_columns = [col for col in self.columns if col in columns_fields]
-                
-                # 验证所有字段都被找到
-                if len(pivot_index) != len(index_fields):
-                    missing = set(index_fields) - set(pivot_index)
-                    raise ValueError(f"Some index fields not found in dataframe. Missing: {missing}")
-                if len(pivot_columns) != len(columns_fields):
-                    missing = set(columns_fields) - set(pivot_columns)
-                    raise ValueError(f"Some column fields not found in dataframe. Missing: {missing}")
-                
-                # 保持原始顺序
-                pivot_index.sort(key=lambda x: index_fields.index(x))
-                pivot_columns.sort(key=lambda x: columns_fields.index(x))
-            else:
-                # 原有逻辑：第一个是 index，第二个是 columns
-                matched = _parse_and_match(self.columns, item)
-                pivot_index = matched[0] if len(matched) > 0 else []
-                pivot_columns = matched[1] if len(matched) > 1 else []
+        elif (count_info := detect_cpdtab2_count(item)):
+            with_subtotals, prefix_len = count_info
+            return cpdtab2_count_result(self, item, with_subtotals, prefix_len, FramePro)
 
-            # 选择 idvar，确保不在 index 或 columns 中
-            if self.uid is None:
-                # 获取所有不在 pivot_index 和 pivot_columns 中的列
-                used_fields = set(pivot_index if isinstance(pivot_index, list) else [pivot_index])
-                used_fields.update(pivot_columns if isinstance(pivot_columns, list) else [pivot_columns])
-                available_cols = [col for col in self.columns[self.notnull().all()].tolist() if col not in used_fields]
-                if available_cols:
-                    idvar = available_cols[0]
-                else:
-                    # 如果没有可用的列，使用第一个非空列（即使它在 index/columns 中）
-                    idvar = self.columns[self.notnull().all()].tolist()[0]
-            else:
-                idvar = self.uid
+        elif item.startswith(('cpdtab2s', 'cpdtab2')):
+            return cpdtab2_agg_result(self, item, FramePro)
 
-            if self.export_mapper is not None and self.rename_status == 'Export':
-                if isinstance(pivot_index, list):
-                    pivot_index = [self.export_mapper.dict.get(x, x) for x in pivot_index]
-                else:
-                    pivot_index = self.export_mapper.dict.get(pivot_index, pivot_index)
-                if isinstance(pivot_columns, list):
-                    pivot_columns = [self.export_mapper.dict.get(x, x) for x in pivot_columns]
-                else:
-                    pivot_columns = self.export_mapper.dict.get(pivot_columns, pivot_columns)
-                idvar = self.export_mapper.dict.get(idvar, idvar)
-
-            pivot_result = self.pivot_table(
-                index=pivot_index,
-                columns=pivot_columns,
-                values=idvar,
-                aggfunc='count',
-                margins=True,
-                margins_name='Total'
-            )
-            
-            return FramePro(add_subtotals(pivot_result))
-
-        elif item.startswith('cpdtab2_'):
-            # 检查是否包含 ___
-            if '___' in item:
-                # 使用 ___ 分隔 index 和 columns
-                # 需要手动解析以确定分界
-                fields_part = item[8:]
-                parts = fields_part.split('___')
-                if len(parts) != 2:
-                    raise ValueError(f"Invalid cpdtab2 format with ___: expected exactly one ___ separator, got {len(parts)-1}")
-                
-                index_fields = parts[0].split('__')
-                columns_fields = parts[1].split('__')
-                
-                # 匹配字段到实际列名
-                pivot_index = [col for col in self.columns if col in index_fields]
-                pivot_columns = [col for col in self.columns if col in columns_fields]
-                
-                # 验证所有字段都被找到
-                if len(pivot_index) != len(index_fields):
-                    missing = set(index_fields) - set(pivot_index)
-                    raise ValueError(f"Some index fields not found in dataframe. Missing: {missing}")
-                if len(pivot_columns) != len(columns_fields):
-                    missing = set(columns_fields) - set(pivot_columns)
-                    raise ValueError(f"Some column fields not found in dataframe. Missing: {missing}")
-                
-                # 保持原始顺序
-                pivot_index.sort(key=lambda x: index_fields.index(x))
-                pivot_columns.sort(key=lambda x: columns_fields.index(x))
-            else:
-                # 原有逻辑：第一个是 index，第二个是 columns
-                matched = _parse_and_match(self.columns, item)
-                pivot_index = matched[0] if len(matched) > 0 else []
-                pivot_columns = matched[1] if len(matched) > 1 else []
-
-            # 选择 idvar，确保不在 index 或 columns 中
-            if self.uid is None:
-                # 获取所有不在 pivot_index 和 pivot_columns 中的列
-                used_fields = set(pivot_index if isinstance(pivot_index, list) else [pivot_index])
-                used_fields.update(pivot_columns if isinstance(pivot_columns, list) else [pivot_columns])
-                available_cols = [col for col in self.columns[self.notnull().all()].tolist() if col not in used_fields]
-                if available_cols:
-                    idvar = available_cols[0]
-                else:
-                    # 如果没有可用的列，使用第一个非空列（即使它在 index/columns 中）
-                    idvar = self.columns[self.notnull().all()].tolist()[0]
-            else:
-                idvar = self.uid
-
-            if self.export_mapper is not None and self.rename_status == 'Export':
-                if isinstance(pivot_index, list):
-                    pivot_index = [self.export_mapper.dict.get(x, x) for x in pivot_index]
-                else:
-                    pivot_index = self.export_mapper.dict.get(pivot_index, pivot_index)
-                if isinstance(pivot_columns, list):
-                    pivot_columns = [self.export_mapper.dict.get(x, x) for x in pivot_columns]
-                else:
-                    pivot_columns = self.export_mapper.dict.get(pivot_columns, pivot_columns)
-                idvar = self.export_mapper.dict.get(idvar, idvar)
-
-            return FramePro(
-                self.pivot_table(
-                    index=pivot_index,
-                    columns=pivot_columns,
-                    values=idvar,
-                    aggfunc='count',
-                    margins=True,
-                    margins_name='Total'
-                )
-            )
-
-        elif item.startswith('cpdtab2s'):
-            aggfunc = get_aggfunc(item)
-            
-            # 检查是否包含 ___
-            if '___' in item:
-                # 使用 ___ 分隔 index 和 columns
-                # 需要手动解析以确定分界
-                prefix_length = len('cpdtab2s' + aggfunc + '_')
-                fields_part = item[prefix_length:]
-                parts = fields_part.split('___')
-                if len(parts) != 2:
-                    raise ValueError(f"Invalid cpdtab2s{aggfunc} format with ___: expected exactly one ___ separator, got {len(parts)-1}")
-                
-                index_fields = parts[0].split('__')
-                columns_and_value = parts[1].split('__')
-                
-                # 最后一个是 value 字段
-                columns_fields = columns_and_value[:-1]
-                value_field = columns_and_value[-1]
-                
-                # 匹配字段到实际列名
-                pivot_index = [col for col in self.columns if col in index_fields]
-                pivot_columns = [col for col in self.columns if col in columns_fields]
-                func_var = value_field if value_field in self.columns else None
-                
-                # 验证所有字段都被找到
-                if len(pivot_index) != len(index_fields):
-                    missing = set(index_fields) - set(pivot_index)
-                    raise ValueError(f"Some index fields not found in dataframe. Missing: {missing}")
-                if len(pivot_columns) != len(columns_fields):
-                    missing = set(columns_fields) - set(pivot_columns)
-                    raise ValueError(f"Some column fields not found in dataframe. Missing: {missing}")
-                if func_var is None:
-                    raise ValueError(f"Value field '{value_field}' not found in dataframe")
-                
-                # 保持原始顺序
-                pivot_index.sort(key=lambda x: index_fields.index(x))
-                pivot_columns.sort(key=lambda x: columns_fields.index(x))
-            else:
-                # 原有逻辑：前面的是 index, columns, 最后一个是 value
-                matched = _parse_and_match(self.columns, item)
-                pivot_index = matched[0] if len(matched) > 0 else []
-                pivot_columns = matched[1] if len(matched) > 1 else []
-                func_var = matched[2] if len(matched) > 2 else None
-
-            if self.export_mapper is not None and self.rename_status == 'Export':
-                if isinstance(pivot_index, list):
-                    pivot_index = [self.export_mapper.dict.get(x, x) for x in pivot_index]
-                else:
-                    pivot_index = self.export_mapper.dict.get(pivot_index, pivot_index)
-                if isinstance(pivot_columns, list):
-                    pivot_columns = [self.export_mapper.dict.get(x, x) for x in pivot_columns]
-                else:
-                    pivot_columns = self.export_mapper.dict.get(pivot_columns, pivot_columns)
-                func_var = self.export_mapper.dict.get(func_var, func_var)
-
-            pivot_result = self.pivot_table(
-                index=pivot_index,
-                columns=pivot_columns,
-                values=func_var,
-                aggfunc=aggfunc,
-                margins=True,
-                margins_name='Total'
-            )
-            
-            return FramePro(add_subtotals(pivot_result))
-
-        elif item.startswith('cpdtab2'):
-            aggfunc = get_aggfunc(item)
-            
-            # 检查是否包含 ___
-            if '___' in item:
-                # 使用 ___ 分隔 index 和 columns
-                # 需要手动解析以确定分界
-                prefix_length = len('cpdtab2' + aggfunc + '_')
-                fields_part = item[prefix_length:]
-                parts = fields_part.split('___')
-                if len(parts) != 2:
-                    raise ValueError(f"Invalid cpdtab2{aggfunc} format with ___: expected exactly one ___ separator, got {len(parts)-1}")
-                
-                index_fields = parts[0].split('__')
-                columns_and_value = parts[1].split('__')
-                
-                # 最后一个是 value 字段
-                columns_fields = columns_and_value[:-1]
-                value_field = columns_and_value[-1]
-                
-                # 匹配字段到实际列名
-                pivot_index = [col for col in self.columns if col in index_fields]
-                pivot_columns = [col for col in self.columns if col in columns_fields]
-                func_var = value_field if value_field in self.columns else None
-                
-                # 验证所有字段都被找到
-                if len(pivot_index) != len(index_fields):
-                    missing = set(index_fields) - set(pivot_index)
-                    raise ValueError(f"Some index fields not found in dataframe. Missing: {missing}")
-                if len(pivot_columns) != len(columns_fields):
-                    missing = set(columns_fields) - set(pivot_columns)
-                    raise ValueError(f"Some column fields not found in dataframe. Missing: {missing}")
-                if func_var is None:
-                    raise ValueError(f"Value field '{value_field}' not found in dataframe")
-                
-                # 保持原始顺序
-                pivot_index.sort(key=lambda x: index_fields.index(x))
-                pivot_columns.sort(key=lambda x: columns_fields.index(x))
-            else:
-                # 原有逻辑：前面的是 index, columns, 最后一个是 value
-                matched = _parse_and_match(self.columns, item)
-                pivot_index = matched[0] if len(matched) > 0 else []
-                pivot_columns = matched[1] if len(matched) > 1 else []
-                func_var = matched[2] if len(matched) > 2 else None
-
-            if self.export_mapper is not None and self.rename_status == 'Export':
-                if isinstance(pivot_index, list):
-                    pivot_index = [self.export_mapper.dict.get(x, x) for x in pivot_index]
-                else:
-                    pivot_index = self.export_mapper.dict.get(pivot_index, pivot_index)
-                if isinstance(pivot_columns, list):
-                    pivot_columns = [self.export_mapper.dict.get(x, x) for x in pivot_columns]
-                else:
-                    pivot_columns = self.export_mapper.dict.get(pivot_columns, pivot_columns)
-                func_var = self.export_mapper.dict.get(func_var, func_var)
-
-            return FramePro(
-                self.pivot_table(
-                    index=pivot_index,
-                    columns=pivot_columns,
-                    values=func_var,
-                    aggfunc=aggfunc,
-                    margins=True,
-                    margins_name='All'
-                )
-            )
+        elif (tab_op := detect_tab_op(item)):
+            return apply_tab_op(self, *tab_op)
 
         else:
             return super().__getattr__(item)

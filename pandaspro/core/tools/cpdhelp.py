@@ -3,6 +3,8 @@ HELP_TOPIC_KEYWORDS = {
         'tab', 'cpdtab', '交叉', '频数', 'pivot', 'cpdtab2', 'cpdtabd', 'cpdtabt',
         'cpdtab2s', 'cpdtab2pct', 'cpdtab2spct', 'percent', '百分比', 'pct',
         'sum', 'mean', '小计', 'subtotal', '___', '多维',
+        'nototal', 'tdiff', 'tratio', 'tsort', 'diff', 'ratio', '差值', '比值',
+        'first', 'last', '宽表', '摊',
     ),
     'magic': ('cpdlist', 'cpddict', 'cpdf', 'cpdfnot', 'cpdisna', 'cpdnotna', '魔法', 'cpd_'),
     'scan': ('singleton', 'scan', '自检', 'tab_singleton', '计数为', 'duplicate', 'dup', '重复', '去重'),
@@ -59,6 +61,11 @@ Tab / 交叉表（cpdtab 系列）
   agg: sum mean median min max std var first last
   例: df.cpdtab2sum_region__grade__salary
 
+  first / last 不是汇总，而是每格只取第一行 / 最后一行的值，用来把长表摊成宽表
+  （格子里放文字，如部门、职级）；结果不带 Total。
+  例: df.cpdtab2first_upi__snapshot__unit   → 一人一行，每个时点一列，格子里是部门
+      等价于 drop_duplicates(['upi', 'snapshot'], keep='first') 之后把 snapshot 摊成列
+
 【多维 index / columns — 用 ___ 分隔两侧】
   格式: cpdtab2_行1__行2___列1__列2
   例: df.cpdtab2_region__dept___quarter__category
@@ -70,6 +77,25 @@ Tab / 交叉表（cpdtab 系列）
   ___  index 侧 与 columns 侧 的分界
 
 除 cpdtab2 外，多维表也可用 cpdtab2s（要小计）、cpdtab2pct*（要百分比）或 cpdtab2sum 等（要聚合）。
+字段超过两个（聚合超过三个）时必须写 ___，否则报错。
+
+【展示选项 — 接在任意 cpdtab2 系列结果后面，不用括号，可连写】
+  .nototal              去掉右侧 Total 列
+  .nototalrow           去掉底部 Total 行
+  .nototalall           两个都去掉
+  .tdiff                恰好两个数据列时：后减前，新增 Diff 列
+  .tdiff_A__C           A − C（反过来写 .tdiff_C__A）
+  .tratio / .tratio_A__C   比值 A ÷ C，新增 Ratio 列（保留 2 位小数）
+  .tsort_列             按该列从小到大（.tsort 不带列名 = 第 1 列）
+  .tsortd_列            按该列从大到小
+  例: df.cpdtab2_region__grade.nototal.tdiff_A__C.tsortd_Diff
+      df.cpdtab2pctrow_region__grade.tdiff_A__C     （百分比表的 Diff 是百分点）
+
+  列的写法: 先按列名找，找不到再按位置（从 1 起）。取值含空格等写不成属性时用位置，
+           例 .tdiff_1__2 = 第 1 列 − 第 2 列。
+  规则: Total 行不参与排序，始终在底部；多层行索引时在每个分组内部排序。
+       Total / Subtotal 列不参与 tdiff / tratio。
+       计数表用了这些选项后，空格子当 0，数字显示成整数。
 """,
     'magic': """
 cpd* 魔法属性速查
@@ -85,6 +111,7 @@ cpdisna_字段          该字段为 NA 的行
 cpdnotna_字段         该字段非 NA 的行
 cpdtab_ / cpdtabd_ / cpdtabt_     单列 tab（见 cpdhelp('tab')）
 cpdtab2_ / cpdtab2s_ / cpdtab2pct_ / cpdtab2sum_  多维交叉表（见 cpdhelp('tab')）
+.nototal / .tdiff / .tratio / .tsort_列 / .tsortd_列  交叉表展示选项（见 cpdhelp('tab')）
 
 查看某一类详情: df.cpdhelp('tab') 或 df.cpdhelp('filter')
 """,

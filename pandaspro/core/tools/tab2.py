@@ -25,6 +25,15 @@ CPDTAB2_COUNT_PREFIXES: tuple[tuple[str, bool], ...] = (
 )
 
 AGG_FUNCS = ('min', 'max', 'mean', 'median', 'sum', 'std', 'var', 'first', 'last')
+_AGG_PATTERN = re.compile(r'^cpdtab2(s?)(' + '|'.join(AGG_FUNCS) + r')_')
+
+# sum / std 的合计历史上一直叫 Total（其余聚合叫 All），保持不变以免破坏已有脚本
+LEGACY_TOTAL_AGGS = ('sum', 'std')
+
+# first / last 是「每格挑一行」而不是汇总，合计没有意义（pandas 3.0 也算不了），所以不带合计
+PICK_AGGS = ('first', 'last')
+
+TAB_KIND_KEY = 'cpdtab'
 
 
 def detect_cpdtab2_pct(item: str) -> tuple[str, bool, int] | None:
@@ -43,21 +52,21 @@ def detect_cpdtab2_count(item: str) -> tuple[bool, int] | None:
     return None
 
 
-def strip_cpdtab2_fields_part(attribute_name: str) -> str | None:
-    """从 cpdtab2 魔法属性名中提取字段部分（含 __ / ___）。"""
-    temp = attribute_name
-    for prefix, _, _ in CPDTAB2_PCT_PREFIXES:
-        if temp.startswith(prefix):
-            return temp[len(prefix):]
-    for prefix, _ in CPDTAB2_COUNT_PREFIXES:
-        if temp.startswith(prefix):
-            return temp[len(prefix):]
-    for func_name in AGG_FUNCS:
-        if temp.startswith('cpdtab2s' + func_name + '_'):
-            return temp[len('cpdtab2s' + func_name + '_'):]
-        if temp.startswith('cpdtab2' + func_name + '_'):
-            return temp[len('cpdtab2' + func_name + '_'):]
+def detect_cpdtab2_agg(item: str) -> tuple[str, bool, int] | None:
+    """返回 (aggfunc, with_subtotals, prefix_len) 或 None。
+
+    整段前缀一次匹配：sum / std 以 s 开头，不能先按 cpdtab2s 判小计。
+    """
+    match = _AGG_PATTERN.match(item)
+    if match:
+        return match.group(2), bool(match.group(1)), match.end()
     return None
+
+
+def mark_tab(table: pd.DataFrame, kind: str) -> pd.DataFrame:
+    """在结果上记下表的种类（count / pct / agg），供 tabops 的展示选项使用。"""
+    table.attrs[TAB_KIND_KEY] = kind
+    return table
 
 
 def _index_is_margin(idx, margins_name: str = 'Total') -> bool:
@@ -74,6 +83,43 @@ def _column_is_margin(col, margins_name: str = 'Total') -> bool:
     return col in names
 
 
+def _match_fields(fields: list[str], columns_list, side: str) -> list[str]:
+    """按属性名里的顺序返回匹配到的列；有字段找不到就报错。"""
+    matched = [col for col in columns_list if col in fields]
+    if len(matched) != len(fields):
+        missing = set(fields) - set(matched)
+        raise ValueError(f"Some {side} fields not found in dataframe. Missing: {missing}")
+    matched.sort(key=lambda x: fields.index(x))
+    return matched
+
+
+def _split_sides(fields_part: str) -> tuple[list[str], list[str]] | None:
+    """含 ___ 时拆成 (index 侧字段, columns 侧字段)；不含返回 None。"""
+    if '___' not in fields_part:
+        return None
+    parts = fields_part.split('___')
+    if len(parts) != 2:
+        raise ValueError(
+            f"Invalid cpdtab2 format with ___: expected exactly one ___ separator, "
+            f"got {len(parts) - 1}"
+        )
+    return parts[0].split('__'), parts[1].split('__')
+
+
+def _missing_separator_error(prefix: str, left: list[str], right: list[str], right_side: str) -> ValueError:
+    """字段过多又没写 ___ 时的报错：用文字写明两个 / 三个下划线，并用 ^^^ 指出位置。"""
+    head = prefix + '__'.join(left)
+    return ValueError(
+        f"{len(left) + len(right)} fields were joined with TWO underscores (__) only, "
+        f"so the row fields and the column fields cannot be told apart.\n"
+        f"Put THREE underscores (___) between the row side and the column side:\n\n"
+        f"    {head}___{'__'.join(right)}\n"
+        f"    {' ' * len(head)}^^^ THREE underscores here: "
+        f"rows on the left, {right_side} on the right\n\n"
+        f"Everywhere else keep TWO underscores (__)."
+    )
+
+
 def parse_pivot_fields_from_attr(
     item: str,
     prefix_len: int,
@@ -84,39 +130,60 @@ def parse_pivot_fields_from_attr(
     支持 ___ 分隔 index 与 columns 侧。
     """
     fields_part = item[prefix_len:]
-    if '___' in fields_part:
-        parts = fields_part.split('___')
-        if len(parts) != 2:
-            raise ValueError(
-                f"Invalid cpdtab2 format with ___: expected exactly one ___ separator, "
-                f"got {len(parts) - 1}"
-            )
-        index_fields = parts[0].split('__')
-        columns_fields = parts[1].split('__')
+    sides = _split_sides(fields_part)
+    if sides is not None:
+        index_fields, columns_fields = sides
     else:
-        all_fields_str = fields_part.replace('___', '__')
-        all_fields = all_fields_str.split('__')
+        all_fields = fields_part.split('__')
         if len(all_fields) < 2:
             raise ValueError(
                 f"Attribute var name parsing needs at least 2 columns for pivot, "
                 f"fields are {all_fields}"
             )
+        if len(all_fields) > 2:
+            raise _missing_separator_error(
+                item[:prefix_len], all_fields[:-1], all_fields[-1:], 'columns'
+            )
         index_fields = [all_fields[0]]
         columns_fields = [all_fields[1]]
 
-    pivot_index = [col for col in columns_list if col in index_fields]
-    pivot_columns = [col for col in columns_list if col in columns_fields]
-
-    if len(pivot_index) != len(index_fields):
-        missing = set(index_fields) - set(pivot_index)
-        raise ValueError(f"Some index fields not found in dataframe. Missing: {missing}")
-    if len(pivot_columns) != len(columns_fields):
-        missing = set(columns_fields) - set(pivot_columns)
-        raise ValueError(f"Some column fields not found in dataframe. Missing: {missing}")
-
-    pivot_index.sort(key=lambda x: index_fields.index(x))
-    pivot_columns.sort(key=lambda x: columns_fields.index(x))
+    pivot_index = _match_fields(index_fields, columns_list, 'index')
+    pivot_columns = _match_fields(columns_fields, columns_list, 'column')
     return pivot_index, pivot_columns
+
+
+def parse_agg_fields_from_attr(
+    item: str,
+    prefix_len: int,
+    columns_list,
+) -> tuple[list[str], list[str], str]:
+    """
+    解析 cpdtab2{agg} 属性名为 pivot_index、pivot_columns、value 字段。
+    最后一个字段总是 value；支持 ___ 分隔 index 与 columns 侧。
+    """
+    fields_part = item[prefix_len:]
+    sides = _split_sides(fields_part)
+    if sides is not None:
+        index_fields, columns_and_value = sides
+        columns_fields, value_field = columns_and_value[:-1], columns_and_value[-1]
+    else:
+        all_fields = fields_part.split('__')
+        if len(all_fields) < 3:
+            raise ValueError(
+                f"Attribute var name parsing results needs at least 3 columns "
+                f"(index, columns, value), fields are {all_fields}"
+            )
+        if len(all_fields) > 3:
+            raise _missing_separator_error(
+                item[:prefix_len], all_fields[:-2], all_fields[-2:], 'columns then the value field'
+            )
+        index_fields, columns_fields, value_field = [all_fields[0]], [all_fields[1]], all_fields[2]
+
+    pivot_index = _match_fields(index_fields, columns_list, 'index')
+    pivot_columns = _match_fields(columns_fields, columns_list, 'column')
+    if value_field not in columns_list:
+        raise ValueError(f"Value field '{value_field}' not found in dataframe")
+    return pivot_index, pivot_columns, value_field
 
 
 def resolve_idvar(frame, pivot_index: list[str], pivot_columns: list[str]) -> str:
@@ -383,18 +450,62 @@ def cpdtab2_pct_result(
         count_table = add_subtotals(count_table)
 
     pct_table = counts_to_pct(count_table, mode=mode, margins_name='Total')
-    return frame_ctor(pct_table)
+    return mark_tab(frame_ctor(pct_table), 'pct')
 
 
-def get_aggfunc(regex_item: str) -> str:
-    pattern = r"^cpdtab2s?(min|max|mean|median|sum|std|var|first|last).*"
-    match = re.search(pattern, regex_item)
-    if match:
-        return match.group(1)
-    raise ValueError(
-        f"Error: The input string '{regex_item}' is not in the correct format. "
-        f"If you want to summarize by count, use only cpdtab2 followed by variable names. "
-        f"If you want to use the aggregate shortcut of cpdtab2, "
-        f"it should start with 'cpdtab2' followed by a valid aggregation function "
-        f"(min, max, mean, median, sum, first, last, std, var)."
+def cpdtab2_count_result(
+    frame,
+    item: str,
+    with_subtotals: bool,
+    prefix_len: int,
+    frame_ctor: Callable,
+) -> pd.DataFrame:
+    """构建 cpdtab2_ / cpdtab2s_ 计数交叉表。"""
+    pivot_index, pivot_columns = parse_pivot_fields_from_attr(
+        item, prefix_len, frame.columns
     )
+    idvar = resolve_idvar(frame, pivot_index, pivot_columns)
+    pivot_index, pivot_columns, idvar = apply_export_mapper_fields(
+        frame, pivot_index, pivot_columns, idvar
+    )
+
+    count_table = build_count_pivot(
+        frame, pivot_index, pivot_columns, idvar, margins_name='Total'
+    )
+    if with_subtotals:
+        count_table = add_subtotals(count_table)
+    return mark_tab(frame_ctor(count_table), 'count')
+
+
+def cpdtab2_agg_result(frame, item: str, frame_ctor: Callable) -> pd.DataFrame:
+    """构建 cpdtab2{agg}_ / cpdtab2s{agg}_ 聚合交叉表。"""
+    agg_info = detect_cpdtab2_agg(item)
+    if agg_info is None:
+        raise ValueError(
+            f"Error: The input string '{item}' is not in the correct format. "
+            f"If you want to summarize by count, use only cpdtab2 followed by variable names. "
+            f"If you want to use the aggregate shortcut of cpdtab2, "
+            f"it should start with 'cpdtab2' followed by a valid aggregation function "
+            f"(min, max, mean, median, sum, first, last, std, var)."
+        )
+    aggfunc, with_subtotals, prefix_len = agg_info
+
+    pivot_index, pivot_columns, value_field = parse_agg_fields_from_attr(
+        item, prefix_len, frame.columns
+    )
+    pivot_index, pivot_columns, value_field = apply_export_mapper_fields(
+        frame, pivot_index, pivot_columns, value_field
+    )
+
+    agg_table = frame.pivot_table(
+        index=pivot_index,
+        columns=pivot_columns,
+        values=value_field,
+        aggfunc=aggfunc,
+        margins=aggfunc not in PICK_AGGS,
+        margins_name='Total' if with_subtotals or aggfunc in LEGACY_TOTAL_AGGS else 'All',
+    )
+    if with_subtotals:
+        agg_table = add_subtotals(agg_table)
+    return mark_tab(frame_ctor(agg_table), 'agg')
+
