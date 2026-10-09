@@ -26,7 +26,7 @@ from pandaspro.core.tools.tab2 import (
     parse_agg_fields_from_attr,
     parse_pivot_fields_from_attr,
 )
-from pandaspro.core.tools.tabcube import build_tab
+from pandaspro.core.tools.tabcube import build_tab, layout_tab
 from pandaspro.core.tools.tabformat import tab_display, tab_style, tab_to_excel
 from pandaspro.core.tools.tabops import apply_tab_op, detect_tab_op, rename_agg
 from pandaspro.core.tools.tabrules import has_tab_rules
@@ -247,6 +247,13 @@ class FramePro(pd.DataFrame):
         result.attrs[TAB_KIND_KEY] = 'count' if aggfunc in ('count', 'size') else 'agg'
         result.attrs[TAB_META_KEY] = meta
         return result
+
+    def tab_layout(self, index, columns=None, value: str = None, *, total_marker='__TOTAL__',
+                   total_position=None, total_labels: dict = None, order: dict = None,
+                   labels: dict = None, formats=None):
+        """Lay out precomputed cells (one row per cell) as a cpdtab2-style table; see pandaspro.tab_layout."""
+        return tab_layout(self, index, columns, value, total_marker=total_marker, total_position=total_position,
+                          total_labels=total_labels, order=order, labels=labels, formats=formats)
 
     def rename_agg(self, field: str = None, label: str = None, **labels):
         """Rename the aggregate of a field in a cpdtab2 result: rename_agg(org="WBG") or rename_agg("org", "WBG")."""
@@ -864,3 +871,32 @@ class TabFrame(FramePro):
         if kwargs or not isinstance(excel_writer, (str, os.PathLike)):
             return pd.DataFrame(self).to_excel(excel_writer, sheet_name=sheet_name, **kwargs)
         return tab_to_excel(self, excel_writer, sheet_name=sheet_name)
+
+
+
+def tab_layout(long_df, index, columns=None, value: str = None, *, total_marker='__TOTAL__',
+               total_position=None, total_labels: dict = None, order: dict = None,
+               labels: dict = None, formats=None):
+    """Lay out precomputed cells the way cpdtab2 would, without aggregating anything.
+
+    long_df has one row per cell: the key columns (index + columns fields) and `value`.
+    A key equal to total_marker stands for "the total of that field", computed by the caller.
+    Registered field rules give the value order, total labels, total position and headers;
+    total_position / total_labels / order / labels override them.
+
+    Only keys present in long_df are shown; a combination without a row stays NaN;
+    a key combination that appears twice raises.
+
+    formats: one code for the whole table, or {field: {value: code}} to format the rows /
+    columns of that value. Codes: "int" (1,234), "pct1" (4.2%), "num2" (1,234.50), any digit 0-9.
+
+    Returns a TabFrame (.display(), .style, .to_excel(path), .rename_agg()).
+    """
+    table, meta = layout_tab(
+        pd.DataFrame(long_df), index, columns, value, total_marker=total_marker, total_position=total_position,
+        total_labels=total_labels, order=order, labels=labels, formats=formats,
+    )
+    result = TabFrame(table)
+    result.attrs[TAB_KIND_KEY] = 'layout'
+    result.attrs[TAB_META_KEY] = meta
+    return result

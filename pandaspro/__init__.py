@@ -35,7 +35,9 @@ from pandaspro.core.api import (
     field_rules,
     tab_defaults,
     clear_field_rules,
-    clear_tab_defaults
+    clear_tab_defaults,
+    TabFrame,
+    tab_layout
 )
 
 from pandaspro.cpdbase.api import (

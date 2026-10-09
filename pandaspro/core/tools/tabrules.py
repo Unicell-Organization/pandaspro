@@ -39,6 +39,7 @@ def set_field_rules(
     share: dict | list | None = None,
     pct_of_total: dict | str | None = None,
     label: str | None = None,
+    total_position: str | None = None,
 ) -> None:
     """Register cross-tab rules for one field. Arguments left as None keep their current value.
 
@@ -47,7 +48,11 @@ def set_field_rules(
     share        : {"value": "Open", "label": "% Open"} or a list of such dicts.
     pct_of_total : {"label": "% of Total"} (or just the label).
     label        : header shown for the field (default: the field name).
+    total_position : "first" / "last", where totals go on the axis this field sits on. With several
+                   fields on an axis, the outermost one that declares a position decides.
     """
+    if total_position is not None and total_position not in POSITION_CHOICES:
+        raise ValueError(f"set_field_rules: total_position must be 'first' or 'last', got {total_position!r}")
     if not isinstance(field, str) or not field:
         raise ValueError("set_field_rules: field must be a non-empty string")
     for entry in ([share] if isinstance(share, dict) else share or []):
@@ -55,7 +60,8 @@ def set_field_rules(
             raise ValueError("set_field_rules: each share needs a 'value', e.g. {'value': 'Open', 'label': '% Open'}")
     rule = _FIELD_RULES.setdefault(field, {})
     given = {'order': list(order) if order is not None else None, 'total_label': total_label,
-             'share': share, 'pct_of_total': pct_of_total, 'label': label}
+             'share': share, 'pct_of_total': pct_of_total, 'label': label,
+             'total_position': total_position}
     rule.update({key: copy.deepcopy(value) for key, value in given.items() if value is not None})
 
 

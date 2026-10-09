@@ -365,3 +365,123 @@ def test_style_and_to_excel(tmp_path):
     assert sheet['M3'].value is None                                      # NaN share
     assert sheet['A5'].value == 'Total' and sheet['B5'].font.bold and sheet['B3'].font.bold  # total row, WBG column
     assert not sheet['E3'].font.bold
+
+
+# ---- total position declared on a field (no global defaults needed)
+
+def test_field_rule_total_position_without_tab_defaults():
+    df = _people()
+    untouched_before = pd.DataFrame(df.cpdtab2_loc_new__open_term)
+    cpd.set_field_rules('org', order=ORG_ORDER, total_label='WBG', total_position='first')
+    cpd.set_field_rules('open_term_x', total_position='first')       # a field no call uses
+    assert cpd.tab_defaults() == {}
+
+    table = df.cpdtab2_loc_new___org__open_term
+    assert table.columns[0][0] == 'WBG'                               # ruled field: total first
+    assert table.index[-1] == 'Total'                                 # row axis has no rule: stays last
+
+    plain = df.cpdtab2_loc_new__open_term                             # no ruled field: old engine, old output
+    assert type(plain) is FramePro
+    pd.testing.assert_frame_equal(pd.DataFrame(plain), untouched_before)
+
+
+def test_total_position_precedence():
+    cpd.set_field_rules('org', total_position='first')
+    df = _people()
+    assert df.cpdtab2('loc_new', 'org').columns[0] == 'Total'                              # rule
+    assert df.cpdtab2('loc_new', 'org', total_position={'cols': 'last'}).columns[-1] == 'Total'   # argument wins
+    assert df.cpdtab2('org', 'loc_new').index[0] == 'Total'                                # follows the field's axis
+    cpd.set_tab_defaults(total_position={'rows': 'first', 'cols': 'last'})
+    table = df.cpdtab2('loc_new', 'org')
+    assert table.columns[0] == 'Total' and table.index[0] == 'Total'                       # rule beats defaults
+
+
+def test_outermost_field_decides_total_position():
+    cpd.set_field_rules('org', total_position='first')
+    cpd.set_field_rules('open_term', total_position='last')
+    df = _people()
+    outer_org = df.cpdtab2('loc_new', ['org', 'open_term'])
+    assert outer_org.columns[0] == ('Total', 'Total')
+    outer_open = df.cpdtab2('loc_new', ['open_term', 'org'])
+    assert outer_open.columns[-1] == ('Total', 'Total')
+    with pytest.raises(ValueError, match="'first' or 'last'"):
+        cpd.set_field_rules('org', total_position='left')
+
+
+# ---- layout-only mode for precomputed cells
+
+def _rate_cells():
+    return pd.DataFrame({
+        'org': ['__TOTAL__', '__TOTAL__', 'IFC', 'IFC', 'IBRD/IDA', 'IBRD/IDA'],
+        'time': ['FY26', 'FY25', 'FY25', 'FY26', 'FY26', 'FY25'],
+        'rate': [0.042, 0.0391, 0.05, 0.061, 0.0377, 0.0352],
+    })
+
+
+def test_tab_layout_keeps_the_values_passed_in():
+    cpd.set_field_rules('org', order=ORG_ORDER, total_label='WBG', total_position='first')
+    table = cpd.tab_layout(_rate_cells(), 'time', 'org', 'rate', formats='pct1')
+    assert isinstance(table, TabFrame)
+    assert list(table.columns) == ['WBG', 'IBRD/IDA', 'IFC']          # rule order, total first, MIGA not invented
+    assert list(table.index) == ['FY25', 'FY26']
+    assert table.loc['FY26'].tolist() == [0.042, 0.0377, 0.061]       # exactly what was passed
+    assert table.loc['FY25'].tolist() == [0.0391, 0.0352, 0.05]
+    assert table.display().loc['FY26', 'WBG'] == '4.2%'
+    assert table.rename_agg(org='Bank Group').columns[0] == 'Bank Group'
+    # same thing as a method, with the organization on the rows
+    by_row = FramePro(_rate_cells()).tab_layout('org', 'time', 'rate')
+    assert list(by_row.index) == ['WBG', 'IBRD/IDA', 'IFC'] and by_row.index.name == 'org'
+    assert by_row.loc['WBG', 'FY26'] == 0.042
+
+
+def test_tab_layout_missing_cells_stay_nan_and_duplicates_raise():
+    cells = _rate_cells().iloc[:-1]                                   # drop (IBRD/IDA, FY25)
+    table = cpd.tab_layout(cells, 'org', 'time', 'rate', total_labels={'org': 'WBG'})
+    assert math.isnan(table.loc['IBRD/IDA', 'FY25'])
+    assert table.display().loc['IBRD/IDA', 'FY25'] == '-'
+    assert list(table.index) == ['IBRD/IDA', 'IFC', 'WBG']            # built-in position: last
+    with pytest.raises(ValueError, match='these keys are repeated'):
+        cpd.tab_layout(pd.concat([_rate_cells(), _rate_cells().head(1)]), 'org', 'time', 'rate')
+    with pytest.raises(ValueError, match='fields not found'):
+        cpd.tab_layout(_rate_cells(), 'org', 'time', 'nope')
+
+
+def test_tab_layout_formats_by_value_of_a_field(tmp_path):
+    cells = pd.DataFrame({
+        'org': ['__TOTAL__'] * 2 + ['IFC'] * 2,
+        'measure': ['Exits', 'Turnover rate'] * 2,
+        'value': [1234, 0.0421, 310, 0.0587],
+    })
+    cpd.set_field_rules('org', total_label='WBG', total_position='first')
+    hints = {'measure': {'Turnover rate': 'pct1', 'Exits': 'int'}}
+    wide = cpd.tab_layout(cells, 'org', 'measure', 'value', formats=hints)
+    assert wide.display().loc['WBG'].tolist() == ['1,234', '4.2%']
+    assert wide.loc['WBG', 'Exits'] == 1234 and wide.loc['IFC', 'Turnover rate'] == 0.0587
+    tall = cpd.tab_layout(cells, 'measure', 'org', 'value', formats=hints)   # same hint, field on the rows
+    assert tall.display().loc['Turnover rate'].tolist() == ['4.2%', '5.9%']
+    assert tall.display().loc['Exits', 'WBG'] == '1,234'
+    assert '4.2%' in wide.style.to_html()
+
+    from openpyxl import load_workbook
+    wide.to_excel(tmp_path / 'rates.xlsx')
+    sheet = load_workbook(tmp_path / 'rates.xlsx').active
+    assert sheet['C2'].value == 0.0421 and sheet['C2'].number_format == '0.0%'
+    assert sheet['B2'].value == 1234 and sheet['B2'].number_format.startswith('#,##0')
+
+    with pytest.raises(ValueError, match='unknown format'):
+        cpd.tab_layout(cells, 'org', 'measure', 'value', formats={'measure': {'Exits': 'percent'}})
+
+
+def test_tab_layout_nested_columns_and_tab_options():
+    cells = pd.DataFrame({
+        'time': ['FY25'] * 4 + ['FY26'] * 4,
+        'org': ['__TOTAL__', '__TOTAL__', 'IFC', 'IFC'] * 2,
+        'open_term': ['Open', 'Term'] * 4,
+        'n': [10, 4, 3, 1, 12, 5, 4, 2],
+    })
+    cpd.set_field_rules('org', total_label='WBG', total_position='first')
+    table = cpd.tab_layout(cells, 'time', ['org', 'open_term'], 'n')
+    assert list(table.columns) == [('WBG', 'Open'), ('WBG', 'Term'), ('IFC', 'Open'), ('IFC', 'Term')]
+    assert table.loc['FY26'].tolist() == [12, 5, 4, 2]
+    assert list(table.nototal.columns) == [('IFC', 'Open'), ('IFC', 'Term')]
+    assert table.tsortd_1.index.tolist() == ['FY26', 'FY25']

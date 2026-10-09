@@ -5,6 +5,7 @@ HELP_TOPIC_KEYWORDS = {
         'sum', 'mean', '小计', 'subtotal', '___', '多维',
         'nototal', 'tdiff', 'tratio', 'tsort', 'diff', 'ratio', '差值', '比值',
         'first', 'last', '宽表', '摊',
+        'tab_layout', 'layout', '排版', '比率', 'total_position',
         'rename_agg', 'set_field_rules', 'field_rules', 'share', '占比', '规则', 'total_label', 'to_excel',
     ),
     'magic': ('cpdlist', 'cpddict', 'cpdf', 'cpdfnot', 'cpdisna', 'cpdnotna', '魔法', 'cpd_'),
@@ -88,6 +89,9 @@ Tab / 交叉表（cpdtab 系列）
   cpd.set_tab_defaults(total_position={'rows': 'last', 'cols': 'first'})
   df.cpdtab2_loc_new___org__open_term   → WBG / IBRD/IDA / IFC / MIGA 各有 Open、Term、% Open
   cpd.field_rules() 查看已登记的规则；cpd.clear_field_rules() 清空。
+  合计位置也可以登记在字段上（不影响没用到这个字段的表）:
+    cpd.set_field_rules('org', total_label='WBG', total_position='first')
+    优先级: 调用时的参数 > 字段规则 > set_tab_defaults > 默认（最后）；同一侧多个字段时最外层的说了算。
   没有登记规则的字段，输出和以前完全一样。cpdtab2s_ 和 cpdtab2pct* 不受规则影响。
 
   有规则时的不同: 多层字段的每一级都有合计（从数据重算）；空格子是 0；
@@ -99,6 +103,13 @@ Tab / 交叉表（cpdtab 系列）
              order={'org': [...]}, shares=[{'field': 'open_term', 'value': 'Open', 'label': '% Open'}])
   其他参数: values / aggfunc、totals='both'|'rows'|'cols'|'none'、nested_totals、
            pct_of_total={'field': 'org', 'label': '% of Total'}、fill_value、dropna_label、labels
+
+【只排版不计算 — 格子已经算好时用（比如比率）】
+  cpd.tab_layout(long_df, 'time', 'org', 'rate', formats='pct1')      也可写 df.tab_layout(...)
+  long_df 每行一个格子：各字段的取值 + 数值列；字段取值为 '__TOTAL__' 表示该字段的合计（调用方自己算好）。
+  顺序、合计名字和位置、表头都按登记的字段规则来；不做任何汇总，缺的格子是 NaN，重复的格子报错。
+  formats: 'int'（1,234）、'pct1'（4.2%）、'num2'（1,234.50）；
+           也可按某字段的取值分别指定: formats={'measure': {'Turnover rate': 'pct1', 'Exits': 'int'}}
 
 【合计改名】
   结果.rename_agg(org='WBG')            把 org 这个字段的合计改名，数字不变，可连写

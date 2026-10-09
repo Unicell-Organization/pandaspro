@@ -1,4 +1,4 @@
-from pandaspro.core.frame import FramePro, cpdBaseFrameMapper, cpdBaseFrameList
+from pandaspro.core.frame import FramePro, cpdBaseFrameMapper, cpdBaseFrameList, TabFrame, tab_layout
 
 from pandaspro.core.tools.dfilter import dfilter
 from pandaspro.core.tools.tabrules import (

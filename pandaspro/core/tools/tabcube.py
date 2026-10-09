@@ -93,9 +93,36 @@ def _resolve_pct_of_total(pct_of_total, index: list[str], columns: list[str], ru
     return resolved
 
 
-def _ordered_values(present: list, order: list | None, blank) -> list:
-    """Listed values first (always shown), then other values sorted, then the blank label."""
-    listed = list(order or [])
+def _axis_positions(index: list[str], columns: list[str], rules: dict, explicit) -> dict:
+    """Where totals go on each axis: explicit argument > field rule > tab defaults > "last".
+    Among the fields of an axis, the outermost one that declares a position decides."""
+    explicit = tabrules.normalize_total_position(explicit)
+    defaults = tabrules.tab_defaults().get('total_position', {})
+    out = {}
+    for axis, axis_fields in (('rows', index), ('cols', columns)):
+        declared = [rules[field]['total_position'] for field in axis_fields if rules[field].get('total_position')]
+        out[axis] = (explicit.get(axis) or (declared[0] if declared else None)
+                     or defaults.get(axis) or DEFAULT_TOTAL_POSITION[axis])
+    return out
+
+
+def _check_field_options(fields: list[str], **options) -> None:
+    for option, given in options.items():
+        unknown = [field for field in (given or {}) if field not in fields]
+        if unknown:
+            raise ValueError(f"{option}: fields {unknown} are not in the table. Fields: {fields}")
+
+
+def _axis_index(label_tuples: list[tuple], names: list):
+    if len(names) == 1:
+        return pd.Index([labels_[0] for labels_ in label_tuples], name=names[0])
+    return pd.MultiIndex.from_tuples(label_tuples, names=names)
+
+
+def _ordered_values(present: list, order: list | None, blank, keep_absent: bool = True) -> list:
+    """Listed values first (shown even when absent unless keep_absent is False), then other
+    values sorted, then the blank label."""
+    listed = [value for value in (order or []) if keep_absent or value in present]
     others = [value for value in present if value not in listed and value != blank]
     try:
         others = sorted(others)
@@ -162,12 +189,8 @@ def build_tab(
     if totals not in tabrules.TOTALS_CHOICES:
         raise ValueError(f"totals must be one of {tabrules.TOTALS_CHOICES}, got {totals!r}")
     nested_totals = nested_totals if nested_totals is not None else defaults.get('nested_totals', True)
-    position = {**DEFAULT_TOTAL_POSITION, **defaults.get('total_position', {}),
-                **tabrules.normalize_total_position(total_position)}
-    for option, given in (('total_labels', total_labels), ('order', order), ('labels', labels)):
-        unknown = [field for field in (given or {}) if field not in fields]
-        if unknown:
-            raise ValueError(f"{option}: fields {unknown} are not in the table. Fields: {fields}")
+    position = _axis_positions(index, columns, rules, total_position)
+    _check_field_options(fields, total_labels=total_labels, order=order, labels=labels)
     total_label = {field: (total_labels or {}).get(field) or rules[field].get('total_label') or DEFAULT_TOTAL_LABEL
                    for field in fields}
     field_label = {field: (labels or {}).get(field) or rules[field].get('label') or field for field in fields}
@@ -275,5 +298,111 @@ def build_tab(
         'pct_labels': sorted({key.label for keys in share_keys.values() for key in keys}
                              | {pct_label for _, pct_label in pct_measures}),
         'aggfunc': str(aggfunc),
+    }
+    return table, meta
+
+
+FORMAT_PATTERN = r'^(int|pct\d|num\d)$'
+
+
+def layout_tab(
+    data: pd.DataFrame,
+    index,
+    columns=None,
+    value: str | None = None,
+    total_marker='__TOTAL__',
+    total_position=None,
+    total_labels: dict | None = None,
+    order: dict | None = None,
+    labels: dict | None = None,
+    formats=None,
+    dropna_label: str = '(blank)',
+) -> tuple[pd.DataFrame, dict]:
+    """Lay out precomputed cells (one row per cell) the way cpdtab2 would. Nothing is aggregated:
+    every number in the output is a number the caller passed in. Returns (table, meta)."""
+    import re
+
+    index, columns = _as_list(index), _as_list(columns)
+    fields = index + columns
+    if not index:
+        raise ValueError("tab_layout needs at least one index field")
+    if value is None:
+        raise ValueError("tab_layout needs the name of the value column")
+    if len(set(fields)) != len(fields):
+        raise ValueError(f"tab_layout: a field can be used only once, got index={index}, columns={columns}")
+    missing = [name for name in fields + [value] if name not in data.columns]
+    if missing:
+        raise ValueError(f"tab_layout: fields not found in dataframe: {missing}")
+
+    rules = {field: tabrules.field_rules(field) for field in fields}
+    position = _axis_positions(index, columns, rules, total_position)
+    _check_field_options(fields, total_labels=total_labels, order=order, labels=labels)
+    total_label = {field: (total_labels or {}).get(field) or rules[field].get('total_label') or DEFAULT_TOTAL_LABEL
+                   for field in fields}
+    field_label = {field: (labels or {}).get(field) or rules[field].get('label') or field for field in fields}
+
+    work = pd.DataFrame(data)[fields + [value]].copy()
+    for field in fields:
+        column = work[field].astype(object)
+        work[field] = column.where(column.notna(), dropna_label)
+    duplicated = work[work.duplicated(subset=fields, keep=False)]
+    if not duplicated.empty:
+        examples = duplicated[fields].drop_duplicates().head(3).to_dict('records')
+        raise ValueError(f"tab_layout: every cell must appear once, but these keys are repeated: {examples}")
+
+    # rank of each key inside its field: rule / argument order, total where the axis position says
+    rank = {}
+    for field in fields:
+        axis = 'rows' if field in index else 'cols'
+        present = list(pd.unique(work[field]))
+        keys = _ordered_values([key for key in present if key != total_marker],
+                               (order or {}).get(field) or rules[field].get('order'), dropna_label,
+                               keep_absent=False)
+        if total_marker in present:
+            keys = [total_marker] + keys if position[axis] == 'first' else keys + [total_marker]
+        rank[field] = {key: place for place, key in enumerate(keys)}
+
+    def axis_keys(axis_fields: list[str]) -> list[tuple]:
+        if not axis_fields:
+            return [()]
+        seen = work[axis_fields].drop_duplicates().itertuples(index=False, name=None)
+        return sorted(seen, key=lambda key: tuple(rank[field][part] for field, part in zip(axis_fields, key)))
+
+    def labels_of(key: tuple, axis_fields: list[str]) -> tuple:
+        return tuple(total_label[field] if part == total_marker else part for field, part in zip(axis_fields, key))
+
+    row_keys, col_keys = axis_keys(index), axis_keys(columns)
+    cells = {tuple(key): cell for *key, cell in work[fields + [value]].itertuples(index=False, name=None)}
+    table = pd.DataFrame(
+        dict(enumerate([[cells.get(row_key + col_key, math.nan) for row_key in row_keys] for col_key in col_keys])),
+        index=_axis_index([labels_of(key, index) for key in row_keys], [field_label[field] for field in index]),
+    )
+    table.columns = (_axis_index([labels_of(key, columns) for key in col_keys], [field_label[field] for field in columns])
+                     if columns else pd.Index([value]))
+
+    # format hints: one code for the whole table, or {field: {value: code}}
+    hints = {'default': None, 'rows': {}, 'cols': {}}
+    if isinstance(formats, str):
+        hints['default'] = formats
+    for field, by_value in (formats.items() if isinstance(formats, dict) else []):
+        if field not in fields:
+            raise ValueError(f"formats: field '{field}' is not in the table. Fields: {fields}")
+        axis, axis_fields = ('rows', index) if field in index else ('cols', columns)
+        hints[axis][str(axis_fields.index(field))] = {
+            (total_label[field] if key == total_marker else key): code for key, code in by_value.items()
+        }
+    codes = [hints['default']] + [code for axis in ('rows', 'cols') for level in hints[axis].values()
+                                  for code in level.values()]
+    bad = [code for code in codes if code is not None and not re.match(FORMAT_PATTERN, str(code))]
+    if bad:
+        raise ValueError(f"formats: unknown format {bad}. Use 'int', 'pct0'..'pct9' or 'num0'..'num9'.")
+
+    meta = {
+        'index': index,
+        'columns': columns,
+        'total_labels': {field: total_label[field] for field in fields},
+        'pct_labels': [],
+        'aggfunc': 'layout',
+        'formats': hints,
     }
     return table, meta
