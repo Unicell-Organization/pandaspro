@@ -93,11 +93,21 @@ def _resolve_pct_of_total(pct_of_total, index: list[str], columns: list[str], ru
     return resolved
 
 
-def _axis_positions(index: list[str], columns: list[str], rules: dict, explicit) -> dict:
-    """Where totals go on each axis: explicit argument > field rule > tab defaults > "last".
+def _rule_source(fields: list[str], profile: dict | None) -> tuple[dict, dict]:
+    """(rule per field, table-wide defaults): from the profile when one is given, and then
+    from nothing else, otherwise from the global registry."""
+    if profile is None:
+        return {field: tabrules.field_rules(field) for field in fields}, tabrules.tab_defaults()
+    declared = profile.get('fields', {})
+    defaults = {key: profile[key] for key in ('totals', 'total_position', 'nested_totals') if key in profile}
+    return {field: dict(declared.get(field, {})) for field in fields}, defaults
+
+
+def _axis_positions(index: list[str], columns: list[str], rules: dict, explicit, defaults: dict) -> dict:
+    """Where totals go on each axis: explicit argument > field rule > table defaults > "last".
     Among the fields of an axis, the outermost one that declares a position decides."""
     explicit = tabrules.normalize_total_position(explicit)
-    defaults = tabrules.tab_defaults().get('total_position', {})
+    defaults = tabrules.normalize_total_position(defaults.get('total_position'))
     out = {}
     for axis, axis_fields in (('rows', index), ('cols', columns)):
         declared = [rules[field]['total_position'] for field in axis_fields if rules[field].get('total_position')]
@@ -168,8 +178,10 @@ def build_tab(
     fill_value=0,
     dropna_label: str = '(blank)',
     labels: dict | None = None,
+    profile: dict | None = None,
 ) -> tuple[pd.DataFrame, dict]:
-    """Build the cross-tab. Returns (table, meta); see FramePro.cpdtab2 for the arguments."""
+    """Build the cross-tab. Returns (table, meta); see FramePro.cpdtab2 for the arguments.
+    `profile` is a registered profile spec; with it the global field rules are not consulted."""
     index, columns = _as_list(index), _as_list(columns)
     fields = index + columns
     if not index:
@@ -183,13 +195,12 @@ def build_tab(
         raise ValueError(f"cpdtab2: aggfunc={aggfunc!r} needs a values column")
 
     # ---- options: explicit argument > registered default > built-in default
-    rules = {field: tabrules.field_rules(field) for field in fields}
-    defaults = tabrules.tab_defaults()
+    rules, defaults = _rule_source(fields, profile)
     totals = totals if totals is not None else defaults.get('totals', 'both')
     if totals not in tabrules.TOTALS_CHOICES:
         raise ValueError(f"totals must be one of {tabrules.TOTALS_CHOICES}, got {totals!r}")
     nested_totals = nested_totals if nested_totals is not None else defaults.get('nested_totals', True)
-    position = _axis_positions(index, columns, rules, total_position)
+    position = _axis_positions(index, columns, rules, total_position, defaults)
     _check_field_options(fields, total_labels=total_labels, order=order, labels=labels)
     total_label = {field: (total_labels or {}).get(field) or rules[field].get('total_label') or DEFAULT_TOTAL_LABEL
                    for field in fields}
@@ -299,6 +310,19 @@ def build_tab(
                              | {pct_label for _, pct_label in pct_measures}),
         'aggfunc': str(aggfunc),
     }
+    if profile is not None:
+        meta['profile'] = profile['name']
+        formats = profile.get('formats') or {}
+        if formats:
+            # counts use "count"; any other aggregation uses its own entry, else "mean"
+            counting = aggfunc in ('count', 'size')
+            meta['formats'] = {
+                'default': formats.get(str(aggfunc)) or formats.get('count' if counting else 'mean'),
+                'share': formats.get('share'),
+                'zero': formats.get('zero'),
+                'rows': {}, 'cols': {},
+                'shown': True,
+            }
     return table, meta
 
 
@@ -334,8 +358,8 @@ def layout_tab(
     if missing:
         raise ValueError(f"tab_layout: fields not found in dataframe: {missing}")
 
-    rules = {field: tabrules.field_rules(field) for field in fields}
-    position = _axis_positions(index, columns, rules, total_position)
+    rules, defaults = _rule_source(fields, None)
+    position = _axis_positions(index, columns, rules, total_position, defaults)
     _check_field_options(fields, total_labels=total_labels, order=order, labels=labels)
     total_label = {field: (total_labels or {}).get(field) or rules[field].get('total_label') or DEFAULT_TOTAL_LABEL
                    for field in fields}

@@ -37,7 +37,12 @@ from pandaspro.core.api import (
     clear_field_rules,
     clear_tab_defaults,
     TabFrame,
-    tab_layout
+    tab_layout,
+    register_tab_profile,
+    load_tab_profiles,
+    tab_profiles,
+    tab_profile,
+    unregister_tab_profile
 )
 
 from pandaspro.cpdbase.api import (

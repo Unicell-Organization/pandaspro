@@ -74,6 +74,12 @@ OVERRIDES: dict[str, dict] = {
 EXPLICIT_BRANCHES: dict[str, dict | None] = {
     # column access / fall-through to the parent class
     "FramePro: item in self.columns": None,
+    "FramePro: is_tab_profile(item)": {
+        "name": "<tab profile>",
+        "summary": "A registered table profile name rebuilds a cpdtab2 result with it, e.g. df.cpdtab2_a___b.mydefault",
+        "shape": r"^[a-z][a-z0-9_]*$",
+        "examples": ["mydefault"],
+    },
     "cpdBaseFrame: hasattr(super(self.__class__, self), item) and not item.startswith(tuple(override_list))": None,
     "DatePro: hasattr(self.dt, item)": None,
     "DatePro: not item.startswith('_')": {

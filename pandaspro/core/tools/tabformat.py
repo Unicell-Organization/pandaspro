@@ -5,6 +5,8 @@ The numbers in the table are never changed here; only how they are shown.
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
 from pandaspro.core.tools.tab2 import MARGIN_NAMES, TAB_META_KEY
@@ -12,6 +14,7 @@ from pandaspro.core.tools.tab2 import MARGIN_NAMES, TAB_META_KEY
 COUNT_NUMBER_FORMAT = '#,##0;-#,##0;"-"'
 DECIMAL_NUMBER_FORMAT = '#,##0.00;-#,##0.00;"-"'
 PCT_NUMBER_FORMAT = '0.0%'
+PY_FORMAT = re.compile(r'^\{:(,?)\.(\d)([f%])\}$')
 
 
 def _parts(label) -> tuple:
@@ -40,22 +43,36 @@ def format_pct(value) -> str:
     return '-' if pd.isna(value) else f'{value:.1%}'
 
 
-def format_as(value, code: str | None) -> str:
-    """Text for one cell. code: None (auto number), 'int', 'pctN' or 'numN' (N decimals)."""
+def format_as(value, code: str | None, zero: str | None = None) -> str:
+    """Text for one cell.
+
+    code: None (auto number), 'int', 'pctN', 'numN' (N decimals), or a Python format such as
+    '{:,.0f}' / '{:.1%}'. zero: text shown for a 0 in a non-percent cell formatted with a Python format.
+    """
     if code is None:
         return format_number(value)
     if pd.isna(value):
-        return '-'
+        return zero if zero is not None else '-'
+    if code.startswith('{'):
+        if value == 0 and zero is not None and '%' not in code:
+            return zero
+        return code.format(value)
     if code == 'int':
         return '-' if round(value) == 0 else f'{round(value):,}'
     decimals = int(code[3:])
     return f'{value:.{decimals}%}' if code.startswith('pct') else f'{value:,.{decimals}f}'
 
 
-def excel_format(value, code: str | None) -> str:
+def excel_format(value, code: str | None, zero: str | None = None) -> str:
     if code is None:
         whole = value is None or float(value).is_integer()
         return COUNT_NUMBER_FORMAT if whole else DECIMAL_NUMBER_FORMAT
+    if code.startswith('{'):
+        comma, decimals, kind = PY_FORMAT.match(code).groups()
+        body = ('#,##0' if comma else '0') + ('.' + '0' * int(decimals) if int(decimals) else '')
+        if kind == '%':
+            return body + '%'
+        return f'{body};-{body};"{zero}"' if zero is not None else body
     if code == 'int':
         return COUNT_NUMBER_FORMAT
     decimals = int(code[3:])
@@ -63,8 +80,8 @@ def excel_format(value, code: str | None) -> str:
     return f'0{zeros}%' if code.startswith('pct') else f'#,##0{zeros}'
 
 
-def _axis_codes(labels, by_level: dict, pct_labels: set) -> list:
-    """Format code per row / column: an explicit hint, else 'pct1' for share labels, else None."""
+def _axis_codes(labels, by_level: dict, pct_labels: set, share_code: str) -> list:
+    """Format code per row / column: an explicit hint, else the share format for share labels, else None."""
     codes = []
     for label in labels:
         parts, code = _parts(label), None
@@ -72,29 +89,35 @@ def _axis_codes(labels, by_level: dict, pct_labels: set) -> list:
             if int(level) < len(parts) and parts[int(level)] in by_value:
                 code = by_value[parts[int(level)]]
         if code is None and any(part in pct_labels for part in parts):
-            code = 'pct1'
+            code = share_code
         codes.append(code)
     return codes
 
 
-def cell_codes(table: pd.DataFrame) -> tuple[list, list, str | None]:
-    """(row codes, column codes, table default). A row code wins over a column code."""
+def cell_codes(table: pd.DataFrame) -> tuple[list, list, str | None, str | None]:
+    """(row codes, column codes, table default, zero text). A row code wins over a column code."""
     meta = table.attrs.get(TAB_META_KEY) or {}
     hints = meta.get('formats') or {}
     pct_labels = set(meta.get('pct_labels', []))
-    return (_axis_codes(table.index, hints.get('rows', {}), pct_labels),
-            _axis_codes(table.columns, hints.get('cols', {}), pct_labels),
-            hints.get('default'))
+    share_code = hints.get('share') or 'pct1'
+    return (_axis_codes(table.index, hints.get('rows', {}), pct_labels, share_code),
+            _axis_codes(table.columns, hints.get('cols', {}), pct_labels, share_code),
+            hints.get('default'), hints.get('zero'))
+
+
+def shows_formatted(table: pd.DataFrame) -> bool:
+    """True when the table was built with a profile that declares formats."""
+    return bool(((table.attrs.get(TAB_META_KEY) or {}).get('formats') or {}).get('shown'))
 
 
 def tab_display(table: pd.DataFrame) -> pd.DataFrame:
     """Same shape as the table, cells as formatted strings."""
-    row_codes, col_codes, default = cell_codes(table)
+    row_codes, col_codes, default, zero = cell_codes(table)
     plain = pd.DataFrame(table)
     out = pd.DataFrame(index=plain.index, columns=plain.columns, dtype=object)
     for j, col_code in enumerate(col_codes):
         out.iloc[:, j] = [
-            format_as(value, row_code or col_code or default)
+            format_as(value, row_code or col_code or default, zero)
             for value, row_code in zip(plain.iloc[:, j], row_codes)
         ]
     return out
@@ -105,7 +128,7 @@ def tab_style(table: pd.DataFrame):
     totals, _ = _label_sets(table)
     plain = pd.DataFrame(table)
     total_rows, total_cols = _flags(plain.index, totals), _flags(plain.columns, totals)
-    row_codes, col_codes, default = cell_codes(table)
+    row_codes, col_codes, default, zero = cell_codes(table)
 
     def bold(_):
         return pd.DataFrame(
@@ -114,7 +137,7 @@ def tab_style(table: pd.DataFrame):
         )
 
     def formatter(code):
-        return lambda value: format_as(value, code)
+        return lambda value: format_as(value, code, zero)
 
     styler = plain.style.format({label: formatter(code or default) for label, code in zip(plain.columns, col_codes)})
     for code in {code for code in row_codes if code}:
@@ -132,7 +155,7 @@ def tab_to_excel(table: pd.DataFrame, path, sheet_name: str = 'Sheet1') -> None:
     plain = pd.DataFrame(table)
     n_header, n_index = plain.columns.nlevels, plain.index.nlevels
     total_rows, total_cols = _flags(plain.index, totals), _flags(plain.columns, totals)
-    row_codes, col_codes, default = cell_codes(table)
+    row_codes, col_codes, default, zero = cell_codes(table)
     bold, center, right = Font(bold=True), Alignment(horizontal='center'), Alignment(horizontal='right')
 
     workbook = Workbook()
@@ -171,7 +194,7 @@ def tab_to_excel(table: pd.DataFrame, path, sheet_name: str = 'Sheet1') -> None:
             elif hasattr(value, 'item'):
                 value = value.item()
             data_cell = sheet.cell(row=excel_row, column=n_index + j + 1, value=value)
-            data_cell.number_format = excel_format(value, row_codes[i] or col_codes[j] or default)
+            data_cell.number_format = excel_format(value, row_codes[i] or col_codes[j] or default, zero)
             data_cell.alignment = right
             if total_rows[i] or total_cols[j]:
                 data_cell.font = bold

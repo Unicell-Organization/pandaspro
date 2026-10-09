@@ -27,9 +27,10 @@ from pandaspro.core.tools.tab2 import (
     parse_pivot_fields_from_attr,
 )
 from pandaspro.core.tools.tabcube import build_tab, layout_tab
-from pandaspro.core.tools.tabformat import tab_display, tab_style, tab_to_excel
+from pandaspro.core.tools.tabformat import shows_formatted, tab_display, tab_style, tab_to_excel
 from pandaspro.core.tools.tabops import apply_tab_op, detect_tab_op, rename_agg
 from pandaspro.core.tools.tabrules import has_tab_rules
+from pandaspro.core.tools.tabprofiles import is_tab_profile, tab_profile
 from pandaspro.core.tools.tab_singleton_scan import tab_singleton_scan
 from pandaspro.core.tools.cpdhelp import cpdhelp
 from pandaspro.core.tools.askai import askai as _askai, print_askai_result
@@ -50,6 +51,11 @@ class cpdBaseFrameList:
 
 
 class FramePro(pd.DataFrame):
+    # How a cpdtab2 result was built (source frame, fields, options), so a table profile can
+    # rebuild it. Listed in _metadata so it follows the result through pandas operations.
+    _metadata = ['_tab_recipe']
+    _tab_recipe = None
+
     def __init__(
             self,
             *args,
@@ -163,19 +169,38 @@ class FramePro(pd.DataFrame):
 
         elif (count_info := detect_cpdtab2_count(item)):
             with_subtotals, prefix_len = count_info
-            if not with_subtotals and self._tab_rules_apply():
-                pivot_index, pivot_columns = parse_pivot_fields_from_attr(item, prefix_len, self.columns)
-                if has_tab_rules(pivot_index + pivot_columns):
-                    return self.cpdtab2(pivot_index, pivot_columns)
-            return cpdtab2_count_result(self, item, with_subtotals, prefix_len, FramePro)
+            if with_subtotals:
+                return cpdtab2_count_result(self, item, with_subtotals, prefix_len, FramePro)
+            pivot_index, pivot_columns = parse_pivot_fields_from_attr(item, prefix_len, self.columns)
+            if self._tab_rules_apply() and has_tab_rules(pivot_index + pivot_columns):
+                return self.cpdtab2(pivot_index, pivot_columns)
+            result = cpdtab2_count_result(self, item, with_subtotals, prefix_len, FramePro)
+            result._tab_recipe = self._make_tab_recipe(pivot_index, pivot_columns)
+            return result
 
         elif item.startswith(('cpdtab2s', 'cpdtab2')):
             agg_info = detect_cpdtab2_agg(item)
-            if agg_info and not agg_info[1] and self._tab_rules_apply():
-                pivot_index, pivot_columns, value_field = parse_agg_fields_from_attr(item, agg_info[2], self.columns)
-                if has_tab_rules(pivot_index + pivot_columns):
-                    return self.cpdtab2(pivot_index, pivot_columns, values=value_field, aggfunc=agg_info[0])
-            return cpdtab2_agg_result(self, item, FramePro)
+            if not agg_info or agg_info[1]:
+                return cpdtab2_agg_result(self, item, FramePro)
+            pivot_index, pivot_columns, value_field = parse_agg_fields_from_attr(item, agg_info[2], self.columns)
+            if self._tab_rules_apply() and has_tab_rules(pivot_index + pivot_columns):
+                return self.cpdtab2(pivot_index, pivot_columns, values=value_field, aggfunc=agg_info[0])
+            result = cpdtab2_agg_result(self, item, FramePro)
+            result._tab_recipe = self._make_tab_recipe(pivot_index, pivot_columns, value_field, agg_info[0])
+            return result
+
+        elif is_tab_profile(item):
+            # A registered profile name used as an attribute rebuilds the table with that profile.
+            recipe = self._tab_recipe
+            if recipe is None:
+                raise AttributeError(
+                    f"'{item}' is a table profile. Use it on a cpdtab2 result, e.g. "
+                    f"df.cpdtab2_a___b__c.{item}, or pass df.cpdtab2(..., profile='{item}')."
+                )
+            return recipe['source'].cpdtab2(
+                recipe['index'], recipe['columns'], values=recipe['values'], aggfunc=recipe['aggfunc'],
+                profile=item, **recipe['options'],
+            )
 
         elif (tab_op := detect_tab_op(item)):
             return apply_tab_op(self, *tab_op)
@@ -193,6 +218,10 @@ class FramePro(pd.DataFrame):
     @property
     def DF(self):
         return pd.DataFrame(self)
+
+    def _make_tab_recipe(self, index, columns, values=None, aggfunc='count', **options):
+        return {'source': self, 'index': list(index), 'columns': list(columns or []), 'values': values,
+                'aggfunc': aggfunc, 'options': options}
 
     def _tab_rules_apply(self):
         # Registered field rules are keyed by the working column names, so they are not
@@ -215,6 +244,7 @@ class FramePro(pd.DataFrame):
             fill_value=0,
             dropna_label: str = '(blank)',
             labels: dict = None,
+            profile: str = None,
     ):
         """Cross-tab with nested totals, named and positioned totals, fixed value order and share columns.
 
@@ -235,17 +265,28 @@ class FramePro(pd.DataFrame):
         dropna_label   : label given to missing field values, so they stay in the counts.
         labels         : {field: header}.
 
+        profile        : name of a registered table profile (pandaspro.register_tab_profile). The profile
+                         then replaces the global field rules: explicit arguments > profile field rules >
+                         profile settings > built-in defaults. Same as chaining `.profile_name` on a result.
+
         Returns a TabFrame: the numbers, plus .display(), .style, .to_excel(path) and .rename_agg().
         """
+        index = [index] if isinstance(index, str) else list(index)
+        columns = [] if columns is None else [columns] if isinstance(columns, str) else list(columns)
+        options = dict(totals=totals, total_position=total_position, total_labels=total_labels, order=order,
+                       shares=shares, pct_of_total=pct_of_total, nested_totals=nested_totals,
+                       fill_value=fill_value, dropna_label=dropna_label, labels=labels)
         table, meta = build_tab(
             pd.DataFrame(self), index, columns, values=values, aggfunc=aggfunc, totals=totals,
             total_position=total_position, total_labels=total_labels, order=order, shares=shares,
             pct_of_total=pct_of_total, nested_totals=nested_totals, fill_value=fill_value,
             dropna_label=dropna_label, labels=labels,
+            profile=tab_profile(profile) if profile is not None else None,
         )
         result = TabFrame(table)
         result.attrs[TAB_KIND_KEY] = 'count' if aggfunc in ('count', 'size') else 'agg'
         result.attrs[TAB_META_KEY] = meta
+        result._tab_recipe = self._make_tab_recipe(index, columns, values, aggfunc, **options)
         return result
 
     def tab_layout(self, index, columns=None, value: str = None, *, total_marker='__TOTAL__',
@@ -859,6 +900,18 @@ class TabFrame(FramePro):
     def display(self):
         """The table as formatted strings: 1,234 for counts ("-" for 0 / empty), 80.0% for shares."""
         return tab_display(self)
+
+    @property
+    def numbers(self):
+        """The plain numeric DataFrame behind the table."""
+        return pd.DataFrame(self)
+
+    # A table built with a profile that declares formats is shown formatted; the data stay numeric.
+    def __repr__(self):
+        return repr(tab_display(self)) if shows_formatted(self) else super().__repr__()
+
+    def _repr_html_(self):
+        return tab_display(self)._repr_html_() if shows_formatted(self) else super()._repr_html_()
 
     @property
     def style(self):

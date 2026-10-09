@@ -1,6 +1,13 @@
 from pandaspro.core.frame import FramePro, cpdBaseFrameMapper, cpdBaseFrameList, TabFrame, tab_layout
 
 from pandaspro.core.tools.dfilter import dfilter
+from pandaspro.core.tools.tabprofiles import (
+    register_tab_profile,
+    load_tab_profiles,
+    tab_profiles,
+    tab_profile,
+    unregister_tab_profile,
+)
 from pandaspro.core.tools.tabrules import (
     set_field_rules,
     set_tab_defaults,

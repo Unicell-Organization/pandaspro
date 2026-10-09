@@ -6,6 +6,7 @@ HELP_TOPIC_KEYWORDS = {
         'nototal', 'tdiff', 'tratio', 'tsort', 'diff', 'ratio', '差值', '比值',
         'first', 'last', '宽表', '摊',
         'tab_layout', 'layout', '排版', '比率', 'total_position',
+        'profile', 'profiles', '方案', 'register_tab_profile', 'load_tab_profiles', 'numbers', 'formats',
         'rename_agg', 'set_field_rules', 'field_rules', 'share', '占比', '规则', 'total_label', 'to_excel',
     ),
     'magic': ('cpdlist', 'cpddict', 'cpdf', 'cpdfnot', 'cpdisna', 'cpdnotna', '魔法', 'cpd_'),
@@ -103,6 +104,29 @@ Tab / 交叉表（cpdtab 系列）
              order={'org': [...]}, shares=[{'field': 'open_term', 'value': 'Open', 'label': '% Open'}])
   其他参数: values / aggfunc、totals='both'|'rows'|'cols'|'none'、nested_totals、
            pct_of_total={'field': 'org', 'label': '% of Total'}、fill_value、dropna_label、labels
+
+【表格方案 profiles — 一套规则起个名字，哪张表要用就在后面点一下】
+  cpd.register_tab_profile('mydefault', {
+      'total_position': {'rows': 'last', 'cols': 'first'},
+      'formats': {'count': '{:,.0f}', 'zero': '-', 'share': '{:.1%}', 'mean': '{:,.1f}'},
+      'fields': {
+          'org':       {'order': [...], 'total_label': 'WBG', 'label': 'Organization', 'total_position': 'first'},
+          'open_term': {'order': ['Open', 'Term'], 'share': {'value': 'Open', 'label': '% Open'}},
+      }})
+  cpd.load_tab_profiles('config/tab_profiles')      读一个 .json 文件或整个文件夹
+  cpd.tab_profiles() / cpd.tab_profile('mydefault') / cpd.unregister_tab_profile('mydefault')
+
+  df.cpdtab2_loc_new___org__open_term               不带方案：原样的普通表
+  df.cpdtab2_loc_new___org__open_term.mydefault     带方案：按方案重新出表
+  df.cpdtab2('loc_new', ['org', 'open_term'], profile='mydefault')    同上
+
+  优先级: 调用时的参数 > 方案里的字段规则 > 方案的整体设置 > 默认。
+  用了方案就只看方案，不看 set_field_rules / set_tab_defaults 登记的全局规则。
+  再点另一个方案名 = 换成那个方案。登记方案不影响任何没用它的表。
+  方案里写了 formats 时，直接打印就是格式化后的样子（1,234、-、78.6%），数据仍是数字：
+    结果.numbers 取纯数字表，结果.display() 取文字表，结果.to_excel(path) 写带格式的 Excel。
+  方案名用小写字母、数字、下划线，不能和已有的写法重名（如 nototal、tsort_x）。
+  cpdtab2s_ 和 cpdtab2pct* 的结果不能套方案。
 
 【只排版不计算 — 格子已经算好时用（比如比率）】
   cpd.tab_layout(long_df, 'time', 'org', 'rate', formats='pct1')      也可写 df.tab_layout(...)
