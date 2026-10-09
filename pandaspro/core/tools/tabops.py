@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from pandaspro.core.tools.tab2 import MARGIN_NAMES, TAB_KIND_KEY
+from pandaspro.core.tools.tab2 import MARGIN_NAMES, TAB_KIND_KEY, TAB_META_KEY
 
 # 较长前缀优先匹配
 TAB_OP_PREFIXES: tuple[str, ...] = ('nototal', 'tdiff', 'tratio', 'tsortd', 'tsort')
@@ -37,22 +37,27 @@ def _parts(label) -> tuple:
     return label if isinstance(label, tuple) else (label,)
 
 
-def _is_margin(label) -> bool:
-    return any(part in MARGIN_NAMES for part in _parts(label))
+def _label_sets(table: pd.DataFrame) -> tuple[set, set]:
+    """(合计标签, 派生列标签)：除默认的 Total / All、Diff / Ratio 外，还包括规则里起的名字和占比列。"""
+    meta = table.attrs.get(TAB_META_KEY) or {}
+    totals = set(MARGIN_NAMES) | set(meta.get('total_labels', {}).values())
+    derived = {DIFF_NAME, RATIO_NAME} | set(meta.get('pct_labels', []))
+    return totals, derived
+
+
+def _has(label, wanted: set) -> bool:
+    return any(part in wanted for part in _parts(label))
 
 
 def _is_subtotal(label) -> bool:
     return any(isinstance(part, str) and part.endswith(SUBTOTAL_SUFFIX) for part in _parts(label))
 
 
-def _is_derived(label) -> bool:
-    return _parts(label)[0] in (DIFF_NAME, RATIO_NAME)
-
-
 def _data_columns(table: pd.DataFrame) -> list:
+    totals, derived = _label_sets(table)
     return [
         col for col in table.columns
-        if not (_is_margin(col) or _is_subtotal(col) or _is_derived(col))
+        if not (_has(col, totals) or _is_subtotal(col) or _has(col, derived))
     ]
 
 
@@ -62,8 +67,9 @@ def _normalize(table: pd.DataFrame) -> pd.DataFrame:
     out.attrs = dict(table.attrs)
     if table.attrs.get(TAB_KIND_KEY) != 'count':
         return out
+    derived = _label_sets(table)[1]
     for col in out.columns:
-        if _is_derived(col):
+        if _has(col, derived):
             continue
         values = out[col].fillna(0)
         if pd.api.types.is_float_dtype(values) and (values % 1 == 0).all():
@@ -93,10 +99,11 @@ def _derived_label(table: pd.DataFrame, name: str):
 def tab_nototal(table: pd.DataFrame, side: str = 'col') -> pd.DataFrame:
     """去掉合计：side = col（右侧 Total 列）/ row（底部 Total 行）/ all。"""
     out = _normalize(table)
+    totals = _label_sets(table)[0]
     if side in ('col', 'all'):
-        out = out.loc[:, [not _is_margin(col) for col in out.columns]]
+        out = out.loc[:, [not _has(col, totals) for col in out.columns]]
     if side in ('row', 'all'):
-        out = out.loc[[not _is_margin(idx) for idx in out.index]]
+        out = out.loc[[not _has(idx, totals) for idx in out.index]]
     out.attrs = dict(table.attrs)
     return out
 
@@ -161,9 +168,10 @@ def tab_sort(table: pd.DataFrame, arg: str | None, desc: bool = False) -> pd.Dat
             ascending=not desc, kind='stable', na_position='last'
         ).index.tolist()
 
+    totals = _label_sets(table)[0]
     margin_rows, groups = [], {}
     for pos, idx in enumerate(out.index):
-        if _is_margin(idx):
+        if _has(idx, totals):
             margin_rows.append(pos)
             continue
         group = idx[0] if isinstance(out.index, pd.MultiIndex) else None
@@ -186,3 +194,42 @@ def apply_tab_op(table: pd.DataFrame, op: str, arg: str | None) -> pd.DataFrame:
     if op == 'tratio':
         return tab_compare(table, arg, ratio=True)
     return tab_sort(table, arg, desc=(op == 'tsortd'))
+
+
+def rename_agg(table: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    """Rename the aggregate ("all values together") of one or more fields; numbers are untouched."""
+    meta = table.attrs.get(TAB_META_KEY)
+    if not meta:
+        raise ValueError("rename_agg works on a cpdtab2 result, e.g. df.cpdtab2_a___b__c.rename_agg(b='All')")
+    out = table.copy()
+    labels = dict(meta['total_labels'])
+
+    def renamed(axis_index, level: int, old, new):
+        if isinstance(axis_index, pd.MultiIndex):
+            tuples = [tuple(new if (i == level and part == old) else part for i, part in enumerate(label))
+                      for label in axis_index]
+            return pd.MultiIndex.from_tuples(tuples, names=axis_index.names)
+        return pd.Index([new if label == old else label for label in axis_index], name=axis_index.name)
+
+    for field, new in mapping.items():
+        if field in meta['index']:
+            axis_index, level = out.index, meta['index'].index(field)
+        elif field in meta['columns']:
+            axis_index, level = out.columns, meta['columns'].index(field)
+        else:
+            raise ValueError(
+                f"rename_agg: field '{field}' is not in this table. "
+                f"Row fields: {meta['index']}, column fields: {meta['columns']}"
+            )
+        old = labels.get(field, 'Total')
+        present = axis_index.get_level_values(level) if isinstance(axis_index, pd.MultiIndex) else axis_index
+        if old not in present:
+            raise ValueError(f"rename_agg: this table shows no aggregate '{old}' for field '{field}'")
+        if field in meta['index']:
+            out.index = renamed(axis_index, level, old, new)
+        else:
+            out.columns = renamed(axis_index, level, old, new)
+        labels[field] = new
+
+    out.attrs = {**table.attrs, TAB_META_KEY: {**meta, 'total_labels': labels}}
+    return out

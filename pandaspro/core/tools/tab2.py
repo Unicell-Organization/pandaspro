@@ -34,6 +34,7 @@ LEGACY_TOTAL_AGGS = ('sum', 'std')
 PICK_AGGS = ('first', 'last')
 
 TAB_KIND_KEY = 'cpdtab'
+TAB_META_KEY = 'cpdtab_meta'
 
 
 def detect_cpdtab2_pct(item: str) -> tuple[str, bool, int] | None:
@@ -63,9 +64,17 @@ def detect_cpdtab2_agg(item: str) -> tuple[str, bool, int] | None:
     return None
 
 
-def mark_tab(table: pd.DataFrame, kind: str) -> pd.DataFrame:
-    """在结果上记下表的种类（count / pct / agg），供 tabops 的展示选项使用。"""
+def mark_tab(table: pd.DataFrame, kind: str, index=None, columns=None, total_label: str = 'Total') -> pd.DataFrame:
+    """在结果上记下表的种类（count / pct / agg）和行列字段，供 tabops 的展示选项与 rename_agg 使用。"""
     table.attrs[TAB_KIND_KEY] = kind
+    if index is not None:
+        fields = list(index) + list(columns or [])
+        table.attrs[TAB_META_KEY] = {
+            'index': list(index),
+            'columns': list(columns or []),
+            'total_labels': {field: total_label for field in fields},
+            'pct_labels': [],
+        }
     return table
 
 
@@ -450,7 +459,7 @@ def cpdtab2_pct_result(
         count_table = add_subtotals(count_table)
 
     pct_table = counts_to_pct(count_table, mode=mode, margins_name='Total')
-    return mark_tab(frame_ctor(pct_table), 'pct')
+    return mark_tab(frame_ctor(pct_table), 'pct', pivot_index, pivot_columns)
 
 
 def cpdtab2_count_result(
@@ -474,7 +483,7 @@ def cpdtab2_count_result(
     )
     if with_subtotals:
         count_table = add_subtotals(count_table)
-    return mark_tab(frame_ctor(count_table), 'count')
+    return mark_tab(frame_ctor(count_table), 'count', pivot_index, pivot_columns)
 
 
 def cpdtab2_agg_result(frame, item: str, frame_ctor: Callable) -> pd.DataFrame:
@@ -497,15 +506,16 @@ def cpdtab2_agg_result(frame, item: str, frame_ctor: Callable) -> pd.DataFrame:
         frame, pivot_index, pivot_columns, value_field
     )
 
+    margins_name = 'Total' if with_subtotals or aggfunc in LEGACY_TOTAL_AGGS else 'All'
     agg_table = frame.pivot_table(
         index=pivot_index,
         columns=pivot_columns,
         values=value_field,
         aggfunc=aggfunc,
         margins=aggfunc not in PICK_AGGS,
-        margins_name='Total' if with_subtotals or aggfunc in LEGACY_TOTAL_AGGS else 'All',
+        margins_name=margins_name,
     )
     if with_subtotals:
         agg_table = add_subtotals(agg_table)
-    return mark_tab(frame_ctor(agg_table), 'agg')
+    return mark_tab(frame_ctor(agg_table), 'agg', pivot_index, pivot_columns, margins_name)
 

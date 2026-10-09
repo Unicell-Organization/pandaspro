@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -13,13 +15,21 @@ from pandaspro.core.tools.search2df import search2df
 from pandaspro.core.tools.strpos import strpos
 from pandaspro.core.tools.tab import tab
 from pandaspro.core.tools.tab2 import (
+    TAB_KIND_KEY,
+    TAB_META_KEY,
     cpdtab2_agg_result,
     cpdtab2_count_result,
     cpdtab2_pct_result,
+    detect_cpdtab2_agg,
     detect_cpdtab2_count,
     detect_cpdtab2_pct,
+    parse_agg_fields_from_attr,
+    parse_pivot_fields_from_attr,
 )
-from pandaspro.core.tools.tabops import apply_tab_op, detect_tab_op
+from pandaspro.core.tools.tabcube import build_tab
+from pandaspro.core.tools.tabformat import tab_display, tab_style, tab_to_excel
+from pandaspro.core.tools.tabops import apply_tab_op, detect_tab_op, rename_agg
+from pandaspro.core.tools.tabrules import has_tab_rules
 from pandaspro.core.tools.tab_singleton_scan import tab_singleton_scan
 from pandaspro.core.tools.cpdhelp import cpdhelp
 from pandaspro.core.tools.askai import askai as _askai, print_askai_result
@@ -153,9 +163,18 @@ class FramePro(pd.DataFrame):
 
         elif (count_info := detect_cpdtab2_count(item)):
             with_subtotals, prefix_len = count_info
+            if not with_subtotals and self._tab_rules_apply():
+                pivot_index, pivot_columns = parse_pivot_fields_from_attr(item, prefix_len, self.columns)
+                if has_tab_rules(pivot_index + pivot_columns):
+                    return self.cpdtab2(pivot_index, pivot_columns)
             return cpdtab2_count_result(self, item, with_subtotals, prefix_len, FramePro)
 
         elif item.startswith(('cpdtab2s', 'cpdtab2')):
+            agg_info = detect_cpdtab2_agg(item)
+            if agg_info and not agg_info[1] and self._tab_rules_apply():
+                pivot_index, pivot_columns, value_field = parse_agg_fields_from_attr(item, agg_info[2], self.columns)
+                if has_tab_rules(pivot_index + pivot_columns):
+                    return self.cpdtab2(pivot_index, pivot_columns, values=value_field, aggfunc=agg_info[0])
             return cpdtab2_agg_result(self, item, FramePro)
 
         elif (tab_op := detect_tab_op(item)):
@@ -174,6 +193,70 @@ class FramePro(pd.DataFrame):
     @property
     def DF(self):
         return pd.DataFrame(self)
+
+    def _tab_rules_apply(self):
+        # Registered field rules are keyed by the working column names, so they are not
+        # applied while the frame is in Export naming; the plain pivot is used instead.
+        return not (self.export_mapper is not None and self.rename_status == 'Export')
+
+    def cpdtab2(
+            self,
+            index,
+            columns=None,
+            values: str = None,
+            aggfunc='count',
+            totals: str = None,
+            total_position=None,
+            total_labels: dict = None,
+            order: dict = None,
+            shares=None,
+            pct_of_total=None,
+            nested_totals: bool = None,
+            fill_value=0,
+            dropna_label: str = '(blank)',
+            labels: dict = None,
+    ):
+        """Cross-tab with nested totals, named and positioned totals, fixed value order and share columns.
+
+        Arguments left as None fall back to pandaspro.set_field_rules / set_tab_defaults,
+        then to the built-in defaults (totals on both axes, placed last, labelled "Total").
+
+        index, columns : field name or list of field names (outer first).
+        values, aggfunc: column to aggregate; without values the rows are counted.
+        totals         : "both" | "rows" (total row only) | "cols" (total column only) | "none".
+        total_position : "first" / "last", or {"rows": ..., "cols": ...}.
+        total_labels   : {field: label}, the name of each field's aggregate.
+        order          : {field: [values]}; listed values first (always shown), others after, blanks last.
+        shares         : [{"field", "value", "label"}], value / field total, placed after the field's values.
+                         A field with a share does not show its own total unless "keep_total": True.
+        pct_of_total   : {"field", "label"}, each value's share of the field total, as an extra column level.
+        nested_totals  : True = every combination of totalled fields; False = one grand total per axis.
+        fill_value     : shown for empty count / sum cells (other aggregations stay NaN).
+        dropna_label   : label given to missing field values, so they stay in the counts.
+        labels         : {field: header}.
+
+        Returns a TabFrame: the numbers, plus .display(), .style, .to_excel(path) and .rename_agg().
+        """
+        table, meta = build_tab(
+            pd.DataFrame(self), index, columns, values=values, aggfunc=aggfunc, totals=totals,
+            total_position=total_position, total_labels=total_labels, order=order, shares=shares,
+            pct_of_total=pct_of_total, nested_totals=nested_totals, fill_value=fill_value,
+            dropna_label=dropna_label, labels=labels,
+        )
+        result = TabFrame(table)
+        result.attrs[TAB_KIND_KEY] = 'count' if aggfunc in ('count', 'size') else 'agg'
+        result.attrs[TAB_META_KEY] = meta
+        return result
+
+    def rename_agg(self, field: str = None, label: str = None, **labels):
+        """Rename the aggregate of a field in a cpdtab2 result: rename_agg(org="WBG") or rename_agg("org", "WBG")."""
+        if field is not None:
+            if label is None:
+                raise ValueError("rename_agg('field', 'New name') needs both the field and the new name")
+            labels = {field: label, **labels}
+        if not labels:
+            raise ValueError("rename_agg needs at least one field, e.g. rename_agg(org='WBG')")
+        return rename_agg(self, labels)
 
     @property
     def varnames(self):
@@ -754,3 +837,30 @@ class FramePro(pd.DataFrame):
 
 
 pd.DataFrame.excel_e = FramePro.excel_e
+
+
+class TabFrame(FramePro):
+    """A cpdtab2 result built with field rules: the numbers, plus presentation helpers."""
+
+    @property
+    def _constructor(self):
+        def _c(*args, **kwargs):
+            return TabFrame(*args, uid=self.uid, exr=self.export_mapper.dict, rename_status=self.rename_status, **kwargs)
+
+        return _c
+
+    def display(self):
+        """The table as formatted strings: 1,234 for counts ("-" for 0 / empty), 80.0% for shares."""
+        return tab_display(self)
+
+    @property
+    def style(self):
+        """Styler with formatted numbers, right alignment and bold totals."""
+        return tab_style(self)
+
+    def to_excel(self, excel_writer, sheet_name: str = 'Sheet1', **kwargs):
+        """Write a formatted sheet (numbers stay numbers). With an ExcelWriter or extra pandas
+        arguments, the plain pandas export is used instead."""
+        if kwargs or not isinstance(excel_writer, (str, os.PathLike)):
+            return pd.DataFrame(self).to_excel(excel_writer, sheet_name=sheet_name, **kwargs)
+        return tab_to_excel(self, excel_writer, sheet_name=sheet_name)

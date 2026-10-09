@@ -5,6 +5,7 @@ HELP_TOPIC_KEYWORDS = {
         'sum', 'mean', '小计', 'subtotal', '___', '多维',
         'nototal', 'tdiff', 'tratio', 'tsort', 'diff', 'ratio', '差值', '比值',
         'first', 'last', '宽表', '摊',
+        'rename_agg', 'set_field_rules', 'field_rules', 'share', '占比', '规则', 'total_label', 'to_excel',
     ),
     'magic': ('cpdlist', 'cpddict', 'cpdf', 'cpdfnot', 'cpdisna', 'cpdnotna', '魔法', 'cpd_'),
     'scan': ('singleton', 'scan', '自检', 'tab_singleton', '计数为', 'duplicate', 'dup', '重复', '去重'),
@@ -78,6 +79,35 @@ Tab / 交叉表（cpdtab 系列）
 
 除 cpdtab2 外，多维表也可用 cpdtab2s（要小计）、cpdtab2pct*（要百分比）或 cpdtab2sum 等（要聚合）。
 字段超过两个（聚合超过三个）时必须写 ___，否则报错。
+
+【字段规则 — 登记一次，之后 cpdtab2_ / cpdtab2sum_ 等直接出成品表】
+  import pandaspro as cpd
+  cpd.set_field_rules('org', order=['IBRD/IDA', 'IFC', 'MIGA'], total_label='WBG')
+  cpd.set_field_rules('open_term', order=['Open', 'Term'], share={'value': 'Open', 'label': '% Open'})
+  cpd.set_field_rules('loc_new', order=['Staff HQ', 'Staff non-HQ'], label='Locations')
+  cpd.set_tab_defaults(total_position={'rows': 'last', 'cols': 'first'})
+  df.cpdtab2_loc_new___org__open_term   → WBG / IBRD/IDA / IFC / MIGA 各有 Open、Term、% Open
+  cpd.field_rules() 查看已登记的规则；cpd.clear_field_rules() 清空。
+  没有登记规则的字段，输出和以前完全一样。cpdtab2s_ 和 cpdtab2pct* 不受规则影响。
+
+  有规则时的不同: 多层字段的每一级都有合计（从数据重算）；空格子是 0；
+                 缺失值显示为 (blank) 并计入合计；order 里列出的取值即使没有数据也保留。
+
+【方法写法 — 参数直接传，不依赖登记】
+  df.cpdtab2('loc_new', ['org', 'open_term'],
+             total_labels={'org': 'WBG'}, total_position={'cols': 'first'},
+             order={'org': [...]}, shares=[{'field': 'open_term', 'value': 'Open', 'label': '% Open'}])
+  其他参数: values / aggfunc、totals='both'|'rows'|'cols'|'none'、nested_totals、
+           pct_of_total={'field': 'org', 'label': '% of Total'}、fill_value、dropna_label、labels
+
+【合计改名】
+  结果.rename_agg(org='WBG')            把 org 这个字段的合计改名，数字不变，可连写
+  结果.rename_agg(org='WBG', loc_new='All locations')
+
+【规则表的展示】
+  结果.display()        格式化成文字：1,234、0 显示为 -、占比 80.0%
+  结果.style            Jupyter 里带格式显示，合计加粗
+  结果.to_excel(path)   写出带格式的 Excel，数字仍是数字
 
 【展示选项 — 接在任意 cpdtab2 系列结果后面，不用括号，可连写】
   .nototal              去掉右侧 Total 列

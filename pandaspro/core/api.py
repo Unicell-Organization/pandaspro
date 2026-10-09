@@ -1,6 +1,14 @@
 from pandaspro.core.frame import FramePro, cpdBaseFrameMapper, cpdBaseFrameList
 
 from pandaspro.core.tools.dfilter import dfilter
+from pandaspro.core.tools.tabrules import (
+    set_field_rules,
+    set_tab_defaults,
+    field_rules,
+    tab_defaults,
+    clear_field_rules,
+    clear_tab_defaults,
+)
 from pandaspro.core.tools.tab import tab
 from pandaspro.core.tools.varnames import varnames
 from pandaspro.core.tools.csort import csort

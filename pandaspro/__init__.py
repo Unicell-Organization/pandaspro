@@ -29,7 +29,13 @@ from pandaspro.core.api import (
     replace_left_with_target,
     compare,
     align_and_sort_by_order,
-    ensure_columns
+    ensure_columns,
+    set_field_rules,
+    set_tab_defaults,
+    field_rules,
+    tab_defaults,
+    clear_field_rules,
+    clear_tab_defaults
 )
 
 from pandaspro.cpdbase.api import (
